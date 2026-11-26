@@ -14,7 +14,7 @@ The response footer shows generated token count and cumulative decoding throughp
 
 Open **stable-diffusion.cpp** settings and select compatible local diffusion model, text encoder, and VAE files. Optional vision encoders and LoRAs can be selected separately. Choose resolution, steps, sampler, scheduler, CFG, seed, and memory options appropriate to the model; the defaults are not universal recommendations.
 
-Type `@image` and select the image tool to permit the model to generate an image. Attach a reference image or refer to an image in the current conversation when using a compatible model. The language model plans the tool call, the chat engine releases memory for image generation, and the chat engine is restored afterward. Images are retained in the conversation archive.
+Type `@image` and select the image tool to permit the model to generate an image. Attach a reference image or refer to an image in the current conversation when using a compatible model. The image tool becomes available after applying valid image settings, without restarting the app. A configured chat model is required to plan the tool call; the chat engine releases memory for image generation and is restored afterward. Images are retained in the conversation archive.
 
 ## Voice and documents
 
@@ -24,7 +24,7 @@ Attach supported images, audio, PDF, DOCX, XLSX, or text/code files. Documents a
 
 ## Terminal tool
 
-Select `@shell` to explicitly allow the language model to execute shell commands for that request. Commands run under the desktop user's ordinary permissions, **not in a sandbox**. Review the implications before enabling this tool. The image and shell tools are mutually exclusive per request.
+Select `@shell` to explicitly allow the configured language model to execute shell commands for that request. Commands run under the desktop user's ordinary permissions, **not in a sandbox**. Review the implications before enabling this tool. The image and shell tools are mutually exclusive per request.
 
 ## Phone access
 

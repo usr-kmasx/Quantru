@@ -208,9 +208,22 @@ imageHint.onclick=()=>{
   input.value=input.value.replace(imagePartial,'').trimEnd();
   setImageTool(true);input.focus();update();
 };
-fetch('/api/image/status',{cache:'no-store'}).then(r=>r.json()).then(d=>{
-  imageToolAvailable=!!d.available;consumeImageTag();update();
-}).catch(()=>{});
+let imageStatusRequest=0;
+async function refreshImageTool(){
+  const request=++imageStatusRequest;
+  try{
+    const response=await fetch('/api/image/status',{cache:'no-store'});
+    if(!response.ok)return;
+    const data=await response.json();
+    if(request!==imageStatusRequest)return;
+    imageToolAvailable=!!data.available;
+    if(imageToolAvailable)consumeImageTag();
+    else if(!busy&&imageToolEnabled)setImageTool(false);
+    update();
+  }catch(_){}
+}
+refreshImageTool();
+setInterval(refreshImageTool,5000);
 // Shell permission is explicit and applies only to the next submitted request.
 const shellHint=document.createElement('button');
 shellHint.type='button';shellHint.className='image-tool-hint';shellHint.hidden=true;

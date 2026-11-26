@@ -266,6 +266,7 @@
       const data=await response.json();
       if(!response.ok)throw Error(data.error||'Unable to apply settings');
       info=data;fill(info.config);
+      if(isImage)await refreshImageTool();
       status.textContent='Settings saved.';
     }catch(error){status.textContent=error.message;}
     finally{
