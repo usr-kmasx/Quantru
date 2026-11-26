@@ -1,0 +1,469 @@
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;background:#242424;color:#fafafa;font:16px/1.5 system-ui,sans-serif}
+main{min-height:100dvh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:16px}
+.composer{width:min(100%,768px);display:flex;align-items:center;gap:8px;padding:10px 12px;background:#303030;border:1px solid #454545;border-radius:999px;box-shadow:0 2px 8px #0002;transition:border-radius .25s,border-color .2s}
+.composer:focus-within{border-color:#5c5c5c}
+textarea{display:block;flex:1;min-width:0;min-height:24px;max-height:240px;resize:none;overflow:auto;background:none;border:0;outline:none;color:inherit;font:inherit;padding:0;margin:0}
+textarea::placeholder{color:#a1a1a1}
+.icon{flex:none;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;cursor:pointer;padding:0;background:transparent;color:#e5e5e5}
+.icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.add{background:#444;box-shadow:0 1px 3px #0003;order:-1}
+.add:hover,.expand:hover{background:#535353}
+.actions{display:flex;align-items:center;gap:6px}
+.send{background:#fafafa;color:#171717}
+.send:disabled{opacity:.45;cursor:default}
+.send:not(:disabled):hover{background:#d4d4d4}
+.expand{display:none;color:#a1a1a1}
+.composer.multiline{border-radius:24px;flex-wrap:wrap;padding:12px}
+.composer.multiline textarea{flex-basis:100%;order:-2;padding:0 8px 6px;min-height:36px}
+.composer.multiline .actions{margin-left:auto}
+.composer.multiline .expand{display:grid}
+.composer.expanded textarea{min-height:35vh;max-height:65vh}
+.attachments{width:min(100%,768px);font-size:13px;color:#a1a1a1}
+.attachments:not(:empty){padding:8px 12px}
+.messages{width:min(100%,768px);display:flex;flex-direction:column;gap:24px;min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.messages:empty{display:none}
+.message{max-width:100%;padding:8px 16px}
+.message.user{align-self:flex-end;background:#363636;border-radius:20px;max-width:85%}
+.message.assistant{align-self:flex-start}
+main:has(.message){height:100dvh;justify-content:flex-end}
+main:has(.message) .messages{flex:1;padding-top:24px;padding-bottom:20px}
+.status{color:#a1a1a1;font-size:12px;margin-bottom:8px}
+.status:empty{display:none}
+.thinking{font-size:14px;line-height:1.55;color:#a1a1a1;margin-bottom:12px}
+.thinking summary{cursor:pointer;user-select:none;font-weight:500}
+.thinking-text{white-space:pre-wrap;border-left:2px solid #515151;padding:4px 12px;margin:8px 0}
+.thinking[hidden]{display:none}
+
+/* Minimal conversation scrollbar */
+.messages{scrollbar-width:thin;scrollbar-color:#4b4b4b transparent}
+.messages::-webkit-scrollbar{width:5px}
+.messages::-webkit-scrollbar-track{background:transparent}
+.messages::-webkit-scrollbar-thumb{background:#4b4b4b;border-radius:999px}
+.messages::-webkit-scrollbar-thumb:hover{background:#737373}
+.messages::-webkit-scrollbar-button{display:none}
+.messages::-webkit-scrollbar-corner{background:transparent}
+
+/* Conversation is part of the page, not a separate panel. */
+.messages{background:transparent;border:0;box-shadow:none;outline:none}
+main:has(.message){height:100dvh;overflow:hidden}
+main:has(.message) .messages{width:100%;align-items:center;overflow-y:auto;overflow-x:hidden}
+.messages .message{width:min(100%,768px);flex-shrink:0}
+.messages .message.user{width:fit-content;max-width:min(85%,652px);align-self:flex-end;margin-right:max(0px,calc((100% - 768px)/2))}
+.messages .message.assistant{align-self:center}
+
+main:has(.message){padding-left:0;padding-right:0}
+main:has(.message) .messages{padding-left:16px;padding-right:16px}
+main:has(.message) .composer,main:has(.message) .attachments{width:min(calc(100% - 32px),768px)}
+.attachment-chip{border:1px solid #505050;border-radius:12px;background:#333;color:#ddd;padding:5px 10px;margin:3px;font:inherit;cursor:pointer}
+.attachment-chip:hover{background:#444}
+.message-image{display:block;max-width:min(100%,320px);max-height:280px;object-fit:contain;border-radius:10px;margin-top:8px}
+.message-file{font-size:13px;color:#aaa;margin-top:6px}
+
+/* Attachment previews above the composer */
+.attachments:not(:empty){display:flex;flex-wrap:wrap;gap:8px;padding:0 12px 10px}
+.attachment-preview{position:relative;display:flex;align-items:center;gap:8px;background:#333;border:1px solid #494949;border-radius:12px;padding:8px;color:#ddd;max-width:100%}
+.attachment-preview.image-preview{width:84px;height:84px;padding:0;overflow:hidden}
+.attachment-preview img{width:100%;height:100%;object-fit:cover;display:block}
+.attachment-remove{border:0;border-radius:50%;width:22px;height:22px;display:grid;place-items:center;padding:0;background:#242424;color:#fff;cursor:pointer;font:18px/1 system-ui,sans-serif}
+.image-preview .attachment-remove{position:absolute;right:4px;top:4px;background:#202020dd}
+.attachment-remove:hover{background:#505050}
+
+.attachment-preview img,.message-image{cursor:zoom-in}
+.image-viewer{border:0;background:transparent;padding:0;max-width:none;max-height:none;width:100%;height:100%;margin:0;inset:0;color:#fff}
+.image-viewer[open]{display:flex;align-items:center;justify-content:center}
+.image-viewer::backdrop{background:#000d}
+.image-viewer>img{display:block;max-width:calc(100vw - 64px);max-height:calc(100dvh - 64px);object-fit:contain;border-radius:8px}
+.viewer-close{position:absolute;top:16px;right:16px;width:36px;height:36px;border:0;border-radius:50%;background:#ffffff20;color:white;font:26px/1 system-ui;cursor:pointer}
+.viewer-close:hover{background:#ffffff35}
+
+/* Keep the outgoing bubble sized to its actual content, including media. */
+.messages .message.user{width:max-content;max-width:min(85%,652px);box-sizing:border-box;overflow-wrap:anywhere}
+.message.user .message-image{width:320px;max-width:100%;height:auto;max-height:280px;object-fit:contain}
+
+/* Consistent minimal scrollbars throughout Quantru. */
+:root{color-scheme:dark;scrollbar-width:thin;scrollbar-color:#4b4b4b transparent}
+*{scrollbar-width:thin;scrollbar-color:#4b4b4b transparent}
+*::-webkit-scrollbar{width:5px;height:5px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#4b4b4b;border-radius:999px}
+*::-webkit-scrollbar-thumb:hover{background:#737373}
+*::-webkit-scrollbar-button{display:none;width:0;height:0}
+*::-webkit-scrollbar-corner{background:transparent}
+
+/* Rendered conversation typography */
+.markdown{white-space:normal;min-width:0;overflow-wrap:anywhere;line-height:1.65}
+.markdown>:first-child{margin-top:0}
+.markdown>:last-child{margin-bottom:0}
+.markdown p{margin:.65em 0}
+.markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6{line-height:1.3;margin:1.15em 0 .5em;font-weight:650}
+.markdown h1{font-size:1.55em}.markdown h2{font-size:1.35em}.markdown h3{font-size:1.17em}.markdown h4,.markdown h5,.markdown h6{font-size:1em}
+.markdown ul,.markdown ol{padding-left:1.6em;margin:.6em 0}
+.markdown li{margin:.22em 0}.markdown li>p{margin:.25em 0}
+.markdown li.task-item{list-style:none}.markdown input[type=checkbox]{margin:0 .45em 0 -1.2em;accent-color:#999}
+.markdown blockquote{border-left:3px solid #555;padding:.15em .9em;color:#b5b5b5;margin:.8em 0}
+.markdown hr{border:0;border-top:1px solid #484848;margin:1.3em 0}
+.markdown a{color:#9ac7ff;text-underline-offset:3px}
+.markdown strong{font-weight:650}
+.markdown code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.87em;background:#363636;padding:.12em .35em;border-radius:4px}
+.markdown .code-block{margin:.8em 0;border:1px solid #404040;border-radius:12px;overflow:hidden;background:#1b1b1b}
+.markdown .code-header{display:flex;justify-content:space-between;align-items:center;background:#303030;padding:6px 12px;font-size:12px;color:#aaa}
+.markdown .copy-code{border:0;background:transparent;color:#ccc;cursor:pointer;padding:4px 8px;border-radius:5px}
+.markdown .copy-code:hover{background:#444}
+.markdown pre{margin:0;padding:14px;overflow:auto;white-space:pre;line-height:1.5}
+.markdown pre code{background:none;padding:0;border-radius:0;white-space:pre;overflow-wrap:normal}
+.markdown table{display:block;width:max-content;max-width:100%;overflow:auto;border-collapse:collapse;margin:1em 0;font-size:.93em}
+.markdown th,.markdown td{border:1px solid #494949;padding:7px 12px;text-align:left}
+.markdown th{background:#303030;font-weight:650}
+.markdown tr:nth-child(even){background:#ffffff04}
+.markdown .katex-display,.markdown eqn{display:block;overflow-x:auto;overflow-y:hidden;max-width:100%;padding:.35em 0}
+.markdown eq{display:inline}
+.thinking-text.markdown{white-space:normal}
+
+.send[data-mode="stop"]{background:#fafafa;color:#171717}
+.send[data-mode="stop"]:hover:not(:disabled){background:#d4d4d4}
+.generation-stopped{color:#999;font-size:12px;margin-top:8px}
+
+/* Reading earlier messages must not be overridden by streaming layout changes. */
+.messages{overflow-anchor:none}
+
+/* Isolated, viewport-sized HTML preview. */
+.code-actions{display:flex;align-items:center;gap:6px}
+.markdown .play-code{display:grid;place-items:center;border:0;background:transparent;color:#ddd;cursor:pointer;padding:4px 8px;border-radius:5px}
+.markdown .play-code:hover{background:#444}
+.html-preview{position:fixed;inset:0;margin:0;padding:0;width:100%;height:100%;max-width:none;max-height:none;border:0;background:#242424;color:#eee}
+.html-preview[open]{display:flex;flex-direction:column}
+.html-preview::backdrop{background:#242424}
+.preview-header{display:flex;align-items:center;justify-content:space-between;flex-shrink:0;height:42px;padding:0 12px;background:#242424;font-size:13px}
+.preview-close{display:grid;place-items:center;width:30px;height:30px;border:0;background:transparent;border-radius:50%;color:#eee;font:24px/1 system-ui;cursor:pointer}
+.preview-close:hover{background:#444}
+.preview-stage{flex:1;min-height:0;overflow:hidden;background:white}
+.preview-stage iframe{display:block;border:0;width:100%;height:100%;background:white}
+
+/* Compact code blocks with independent scrolling and a fixed header. */
+.markdown .code-block{min-width:0;max-width:100%}
+.markdown .code-block pre{max-height:min(360px,50dvh);overflow:auto;overscroll-behavior:contain}
+
+/* Compact thinking area with independent scrolling. */
+.thinking-text{max-height:min(360px,50dvh);overflow:auto;overscroll-behavior:contain}
+
+/* Contextual actions beneath each message. */
+.message-actions{display:flex;gap:3px;align-items:center;flex-shrink:0;margin-top:-22px;min-height:28px}
+.messages .user-actions{align-self:flex-end;margin-right:max(0px,calc((100% - 768px)/2));padding-right:8px;justify-content:flex-end}
+.messages .assistant-actions{width:min(100%,768px);align-self:center;padding-left:12px}
+.message-action{display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#929292;cursor:pointer;padding:5px}
+.message-action svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.message-action:hover:not(:disabled),.message-action:focus-visible{background:#373737;color:#eee}
+.message-action:disabled{opacity:.35;cursor:default}
+.message-action.copied{color:#d6e9d6;background:#39483d}
+.edit-banner{display:flex;width:min(calc(100% - 32px),768px);justify-content:space-between;align-items:center;padding:4px 12px 8px;color:#aaa;font-size:13px}
+.edit-banner[hidden]{display:none}
+.edit-banner button{border:0;border-radius:6px;background:#353535;color:#ddd;cursor:pointer;padding:4px 9px;font:inherit}
+.edit-banner button:hover{background:#464646}
+
+/* Edit directly in the outgoing message. */
+.messages .message.user.editing{width:min(100%,652px);max-width:100%;padding:12px 16px}
+.user-text[hidden],.message-actions[hidden]{display:none}
+.inline-editor{display:flex;flex-direction:column;gap:10px;min-width:0}
+.inline-edit-field{width:100%;min-height:32px;max-height:240px;resize:none;white-space:pre-wrap;font:inherit;color:inherit;background:transparent;border:0;outline:none;padding:2px 0}
+.inline-edit-actions{display:flex;justify-content:flex-end;gap:8px}
+.inline-edit-actions button{border:0;border-radius:18px;background:#494949;color:#eee;padding:7px 15px;font:13px system-ui;cursor:pointer}
+.inline-edit-actions button:hover{background:#595959}
+.inline-edit-actions .inline-edit-save{background:#f4f4f4;color:#222}
+.inline-edit-actions .inline-edit-save:hover{background:#d8d8d8}
+.inline-edit-actions button:disabled{opacity:.4;cursor:default}
+
+/* Preserve manual reading position while streaming code. */
+.markdown pre{overflow-anchor:none}
+
+/* Quantru mark in the upper-left corner, independent of chat scrolling. */
+.quantru-logo{position:fixed;top:14px;left:14px;width:44px;height:44px;object-fit:contain;z-index:5;pointer-events:none;user-select:none}
+@media(max-width:850px){.quantru-logo{width:30px;height:30px;top:6px;left:6px;opacity:.85}}
+
+/* Sliding side panel, with the logo travelling along its edge. */
+:root{--panel-width:min(260px,72vw);--panel-motion:220ms cubic-bezier(.2,.7,.25,1)}
+.quantru-panel{position:fixed;inset:0 auto 0 0;width:var(--panel-width);background:#1e1e1e;border-right:1px solid #363636;z-index:6;transform:translateX(-100%);transition:transform var(--panel-motion);overflow:auto}
+.quantru-logo{display:grid;place-items:center;border:0;padding:0;background:transparent;cursor:pointer;pointer-events:auto;z-index:7;transition:transform var(--panel-motion),background-color 150ms;border-radius:9px}
+.quantru-logo img{width:100%;height:100%;object-fit:contain;pointer-events:none}
+.quantru-logo:hover{background:#ffffff0a}
+.quantru-logo:focus-visible{outline:1px solid #777;outline-offset:3px}
+body.panel-open .quantru-panel{transform:translateX(0)}
+body.panel-open .quantru-logo{transform:translateX(var(--panel-width))}
+main{transition:margin-left var(--panel-motion)}
+@media(min-width:851px){body.panel-open main{margin-left:var(--panel-width)}}
+@media(prefers-reduced-motion:reduce){.quantru-panel,.quantru-logo,main{transition:none}}
+
+/* Backend entry and centered floating dialog. */
+.quantru-panel{padding:14px 10px}
+.panel-item{display:flex;align-items:center;width:100%;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:#e5e5e5;font:500 14px system-ui;text-align:left;cursor:pointer}
+.panel-item:hover,.panel-item:focus-visible{background:#303030}
+.llama-settings{position:fixed;inset:0;margin:auto;padding:0;width:min(480px,calc(100vw - 32px));height:min(340px,calc(100dvh - 32px));border:1px solid #484848;border-radius:16px;background:#2b2b2b;color:#eee;box-shadow:0 16px 60px #0006;overflow:hidden}
+.llama-settings[open]{display:flex;flex-direction:column}
+.llama-settings::backdrop{background:#0008}
+.llama-settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #3c3c3c}
+.llama-settings-header h2{font-size:15px;font-weight:600;margin:0}
+.llama-settings-close{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:#ccc;cursor:pointer;font:24px/1 system-ui}
+.llama-settings-close:hover{background:#444}
+/* Focus the dialog on opening, not its close button. Keep one keyboard focus ring. */
+.llama-settings:focus,.mobile-pair-dialog:focus{outline:none}
+.llama-settings-close:focus{outline:none;box-shadow:none}
+.llama-settings-close:focus-visible{outline:1px solid #aaa;outline-offset:2px}
+.llama-settings-body{flex:1;min-height:0;overflow:auto;padding:16px}
+
+/* Categorized llama.cpp settings */
+.llama-settings{width:min(820px,calc(100vw - 32px));height:min(760px,calc(100dvh - 40px));background:#262626}
+.llama-settings-header{padding:12px 20px;flex-shrink:0}
+.llama-settings-header h2{font-size:17px}
+.llama-settings-body{padding:20px 24px;overscroll-behavior:contain}
+.llama-overview{padding:0 2px 18px}
+.llama-version{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px;color:#aaa;font-size:12px}
+.llama-version strong{color:#ddd;font-size:14px;font-weight:600}
+.settings-category{margin:0 0 24px}
+.settings-category h3{margin:0 0 9px 2px;font-size:13px;color:#bcbcbc;font-weight:600}
+.settings-list{border:1px solid #414141;border-radius:12px;background:#2d2d2d;overflow:hidden}
+.settings-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:13px 15px;min-height:64px}
+.settings-row+.settings-row{border-top:1px solid #3c3c3c}
+.settings-label{display:flex;flex-direction:column;gap:3px;min-width:0}
+.settings-name{color:#e7e7e7;font-size:14px;font-weight:500}
+.settings-description{color:#9c9c9c;font-size:12px;line-height:1.4}
+.settings-control{font:13px system-ui;color:#eee;background:#242424;border:1px solid #494949;border-radius:7px;padding:8px 10px;min-width:0;max-width:100%;outline:none}
+.settings-control:focus-visible{border-color:#8a8a8a}
+.settings-control[type=number]{width:112px}
+select.settings-control{width:150px}
+.settings-path{flex-direction:column;align-items:stretch;gap:9px}
+.settings-path .settings-control{width:100%;font:12px ui-monospace,monospace}
+.settings-switch{appearance:none;flex-shrink:0;width:38px;height:22px;border-radius:14px;padding:0;cursor:pointer;position:relative;background:#484848;border:0;transition:background .15s}
+.settings-switch:checked{background:#3372d7}
+.settings-switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;background:#eee;border-radius:50%;transition:transform .15s}
+.settings-switch:checked::after{transform:translateX(16px)}
+.llama-settings-footer{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid #3c3c3c;flex-shrink:0}
+.llama-settings-status{flex:1;min-width:0;color:#aaa;font-size:12px;overflow-wrap:anywhere}
+.llama-settings-footer button{flex-shrink:0;border:0;background:#383838;color:#ddd;border-radius:8px;padding:9px 13px;font:500 13px system-ui;cursor:pointer}
+.llama-settings-footer .settings-apply{background:#eee;color:#222}
+.llama-settings-footer button:disabled{opacity:.4;cursor:default}
+.llama-settings-footer button:not(:disabled):hover{filter:brightness(1.12)}
+@media(max-width:550px){.llama-settings-body{padding:14px}.settings-row{gap:10px;padding:11px}.llama-settings-footer{flex-wrap:wrap}.llama-settings-status{flex-basis:100%}}
+
+.settings-row[hidden]{display:none}
+
+/* Composer microphone */
+.icon.mic{color:#a1a1a1}
+.icon.mic:not(:disabled):hover{background:#444;color:#eee}
+.icon.mic:disabled{cursor:default}
+
+.voice-status{width:min(100%,768px);padding:4px 12px 8px;color:#aaa;font-size:12px}
+.voice-status[hidden]{display:none}
+.icon.mic.recording{color:#fff;background:#b84444}
+.icon.mic.recording:hover{background:#c85454}
+
+/* Sidebar bottom settings entry */
+.quantru-panel{display:flex;flex-direction:column}
+.quantru-panel > #llama-settings-open{margin-top:auto;flex-shrink:0}
+
+/* Lightweight chat archive in the sidebar. */
+.quantru-panel{overflow:hidden;gap:4px}
+.new-chat{gap:9px;flex-shrink:0;font-weight:600}
+.new-chat span{font-size:20px;line-height:1;font-weight:400}
+.history-heading{font-size:12px;color:#999;padding:13px 12px 4px}
+.chat-list{min-height:0;flex:1;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.chat-entry{display:flex;align-items:center;position:relative;flex-shrink:0;border-radius:8px}
+.chat-entry:hover,.chat-entry:has(.chat-open.active){background:#303030}
+.chat-open,.chat-options{border:0;background:none;color:#ddd;cursor:pointer;font:13px system-ui}
+.chat-open{flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:10px 11px;min-width:0;border-radius:8px}
+.chat-open.active{color:#fff;font-weight:600}
+.chat-options{width:30px;min-height:30px;opacity:0;flex-shrink:0;border-radius:6px}
+.chat-entry:hover .chat-options,.chat-entry:focus-within .chat-options{opacity:1}
+.chat-options:hover{background:#454545}
+.chat-menu{position:absolute;right:4px;top:100%;z-index:3;background:#333;border:1px solid #505050;border-radius:8px;padding:4px;box-shadow:0 6px 18px #0006}
+.chat-menu button{display:block;text-align:left;width:100%;border:0;border-radius:5px;padding:8px 12px;background:none;color:#eee;cursor:pointer}
+.chat-menu button:hover{background:#494949}
+.more-chats[hidden]{display:none}
+.history-note{font-size:11px;color:#aaa;overflow-wrap:anywhere}
+.history-note:empty{display:none}
+.older-messages{align-self:center;flex-shrink:0;background:transparent;border:1px solid #494949;border-radius:8px;color:#aaa;font:12px system-ui;padding:8px 14px;cursor:pointer}
+.older-messages:hover{background:#303030;color:#eee}
+.chat-entry button:disabled,.new-chat:disabled,.older-messages:disabled{cursor:default;opacity:.55}
+/* Completed messages retain their layout and paint state. */
+
+/* Inline conversation title editing. */
+.chat-entry > [hidden]{display:none}
+.chat-rename{display:flex;align-items:center;gap:3px;width:100%;min-width:0;padding:3px 4px}
+.chat-rename input{flex:1;min-width:0;width:0;background:#292929;border:1px solid #626262;border-radius:6px;padding:7px 8px;color:#eee;font:13px system-ui;outline:none}
+.chat-rename input:focus{border-color:#999}
+.chat-rename button{flex-shrink:0;width:26px;height:28px;border:0;border-radius:6px;color:#ddd;background:transparent;font:17px system-ui;cursor:pointer}
+.chat-rename button:hover{background:#444}
+
+/* Color emoji without changing the normal text font. */
+@font-face {
+  font-family: "Quantru Emoji";
+  src: local("Noto Color Emoji");
+  font-style: normal;
+  font-weight: 400;
+  unicode-range: U+1F000-1FAFF,U+2600-26FF,U+2700-27BF,U+2300-23FF,U+2B00-2BFF,U+00A9,U+00AE,U+203C,U+2049,U+2122,U+2139,U+3030,U+303D,U+3297,U+3299,U+200D,U+FE0F,U+20E3;
+}
+html,body,.chat-open,.chat-rename input {
+  font-family: "Quantru Emoji",system-ui,"Noto Color Emoji",sans-serif;
+}
+.markdown code {
+  font-family: "Quantru Emoji",ui-monospace,SFMono-Regular,Consolas,"Noto Color Emoji",monospace;
+}
+
+/* Keep the live message in layout while its content streams. */
+.messages .message{flex-shrink:0}
+.messages .message.assistant{content-visibility:visible;contain-intrinsic-size:none}
+
+.generated-result{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:8px}
+.generated-image{display:block;width:auto;max-width:100%;max-height:560px;object-fit:contain;border-radius:12px;cursor:zoom-in}
+.generated-download{font-size:12px;color:#aaa;text-decoration:none;padding:5px 0}
+.generated-download:hover{color:#fff}
+.image-tool-hint{align-self:center;width:min(100%,768px);text-align:left;border:1px solid #454545;border-radius:10px;background:#303030;color:#ddd;padding:10px 14px;cursor:pointer;margin-bottom:6px}
+.image-tool-hint[hidden]{display:none}
+.image-tool-hint:hover{background:#3c3c3c}
+
+/* Persistent, removable image-tool permission inside the composer. */
+.image-tool-chip{display:inline-flex;flex-shrink:0;align-items:center;gap:5px;order:-1;padding:3px 4px 3px 9px;border-radius:999px;background:#384252;color:#c3d8ff;font-size:13px;line-height:22px;white-space:nowrap}
+.image-tool-chip[hidden]{display:none}
+.image-tool-chip button{display:grid;place-items:center;width:21px;height:21px;padding:0;border:0;border-radius:50%;background:transparent;color:inherit;font:18px/1 system-ui;cursor:pointer}
+.image-tool-chip button:hover{background:#ffffff20}
+.image-tool-chip button:disabled{opacity:.5;cursor:default}
+
+.quantru-panel > #image-settings-open{flex-shrink:0}
+
+/* Compact reasoning menu; no additional permanent controls. */
+.reasoning-control{position:relative;flex:none}
+.reasoning-control[hidden],.reasoning-menu[hidden]{display:none}
+.reasoning-toggle{color:#a1a1a1}
+.reasoning-toggle:hover{background:#444;color:#eee}
+.reasoning-toggle.active{color:#a9c7f5;background:#394352}
+.reasoning-toggle:disabled{cursor:default;opacity:.55}
+.reasoning-menu{position:absolute;bottom:calc(100% + 12px);right:0;z-index:30;min-width:190px;padding:5px;background:#303030;border:1px solid #505050;border-radius:12px;box-shadow:0 6px 20px #0005}
+.reasoning-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:7px;background:none;color:#eee;text-align:left;font:13px system-ui;cursor:pointer;white-space:nowrap}
+.reasoning-menu button:hover,.reasoning-menu button:focus-visible{background:#424242}
+.reasoning-menu small{margin-left:auto;color:#aaa;font-size:11px}
+.reasoning-check{margin-left:auto;color:#a9c7f5}
+
+/* Use the document viewport as the only conversation scroller. A nested
+   full-height scrolling flex layer can become stale in embedded Chromium.
+   Keep the composer dock sticky, without changing the inner code scrollers. */
+html,body{height:auto;min-height:100%;overflow-anchor:none}
+main{min-height:100dvh}
+main:has(.message){height:auto;min-height:100dvh;overflow:visible;justify-content:flex-end;padding-bottom:0}
+main:has(.message) .messages{flex:1 0 auto;overflow:visible;width:100%;min-height:0;padding-top:24px;padding-bottom:20px}
+.composer-dock{display:flex;flex-direction:column;align-items:center;width:100%;flex-shrink:0;min-width:0}
+main:not(:has(.message)) .composer-dock{width:min(100%,768px)}
+main:has(.message) .composer-dock{position:sticky;bottom:0;z-index:4;padding:4px 0 16px;background:#242424}
+main:has(.message) .composer-dock .composer{flex-shrink:0}
+.messages .message{user-select:text}
+
+/* Floating wordmark on the empty conversation screen. */
+.composer-dock{position:relative}
+.welcome-title{position:absolute;bottom:calc(100% + clamp(40px,21.5vh,150px));left:0;right:0;margin:0;text-align:center;font-size:32px;font-weight:600;line-height:1.2;letter-spacing:-1px;color:#eee;pointer-events:none;user-select:none}
+main:has(.message) .welcome-title{display:none}
+
+/* Optional image adapters. Each row stores a file, weight and enable state. */
+.lora-setting{gap:10px}
+.lora-list{display:flex;flex-direction:column;gap:8px;width:100%}
+.lora-list:empty{display:none}
+.lora-entry{padding:10px;border:1px solid #424242;border-radius:8px;display:flex;flex-direction:column;gap:9px}
+.lora-entry-actions{display:flex;align-items:center;gap:12px}
+.lora-strength{display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;margin-left:auto}
+.lora-strength input{width:80px!important}
+.lora-add,.lora-remove{background:#383838;border:0;border-radius:7px;padding:7px 11px;color:#ddd;font:12px system-ui;cursor:pointer}
+.lora-add{align-self:flex-start}
+.lora-add:hover,.lora-remove:hover{background:#494949}
+.lora-add:disabled,.lora-remove:disabled{opacity:.45;cursor:default}
+
+.message.user .user-text{text-align:right}
+
+/* Stable-diffusion resolution presets */
+.resolution-presets{align-items:stretch;flex-direction:column;gap:10px}
+.resolution-preset-list{display:flex;flex-wrap:wrap;gap:7px}
+.resolution-preset{border:1px solid #494949;border-radius:7px;background:#383838;color:#ddd;padding:7px 10px;font:12px system-ui;cursor:pointer;transition:background .12s,border-color .12s}
+.resolution-preset:hover:not(:disabled){background:#444;border-color:#666}
+.resolution-preset.active{background:#30445f;border-color:#5b8fd3;color:#edf5ff}
+.resolution-preset:disabled{opacity:.45;cursor:default}
+
+/* Real local shell calls, rendered as literal terminal text. */
+.shell-tool-chip{background:#4c3c30;color:#edc9a8}
+.shell-run{width:min(100%,768px);min-width:0;overflow:hidden;border:1px solid #454545;border-radius:12px;margin:8px 0 12px;background:#292929;font-size:13px}
+.shell-run-header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#333;color:#ddd}
+.shell-run-status{margin-left:auto;font-size:12px;color:#aaa}
+.shell-run[data-status="running"] .shell-run-status{color:#edc9a8}
+.shell-run-header button{color:#ddd;background:none;border:0;font:inherit;padding:2px 4px;cursor:pointer}
+.shell-run-header button:hover{color:#fff}
+.shell-run-cwd{font:11px monospace;color:#aaa;padding:8px 12px 0;overflow-wrap:anywhere}
+.shell-run-command,.shell-run-output{font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:8px 12px;max-width:100%;user-select:text}
+.shell-run-output{border-top:1px solid #454545;max-height:320px;overflow:auto;overscroll-behavior:contain;color:#c9c9c9}
+.shell-run-output[hidden]{display:none}
+
+.quantru-panel>#mobile-pair-open{margin-top:auto;flex-shrink:0;width:40px;display:grid;place-items:center;padding:8px;min-height:38px}
+.quantru-panel>#llama-settings-open{margin-top:0}
+.mobile-pair-open svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round}
+.mobile-pair-dialog{width:min(360px,calc(100vw - 32px));padding:0;border:1px solid #454545;border-radius:16px;background:#292929;color:#eee}
+.mobile-pair-dialog::backdrop{background:#0008}
+.mobile-pair-body{display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px 20px 20px;text-align:center;font-size:13px;color:#ccc}
+.mobile-pair-body p{margin:0}
+.mobile-pair-qr{width:min(244px,100%);height:auto;background:white;border-radius:8px;image-rendering:pixelated}
+.mobile-pair-expiry,.mobile-pair-status{font-size:12px;color:#aaa}
+.mobile-pair-copy,.mobile-pair-revoke{border:1px solid #555;border-radius:8px;background:#363636;color:#ddd;padding:8px 13px;cursor:pointer}
+.mobile-pair-revoke:disabled{opacity:.5;cursor:default}
+.mobile-pair-body [hidden],body.mobile-client #mobile-pair-open,body.mobile-client #llama-settings-open,body.mobile-client #image-settings-open{display:none}
+
+/* Fade the final visible chat rows into the sidebar footer while scrolling. */
+.chat-list[data-fade-bottom]{
+  -webkit-mask-image:linear-gradient(to bottom,#000 0,#000 max(0px,calc(100% - 64px)),transparent 100%);
+  mask-image:linear-gradient(to bottom,#000 0,#000 max(0px,calc(100% - 64px)),transparent 100%);
+}
+
+.mobile-devices{width:100%;text-align:left;border-top:1px solid #444;padding-top:12px}
+.mobile-devices-heading{font-size:12px;color:#aaa;margin-bottom:8px}
+.mobile-device-empty{font-size:12px;color:#888}
+.mobile-device{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #383838}
+.mobile-device strong,.mobile-device small{display:block;overflow-wrap:anywhere}
+.mobile-device strong{font-weight:500;color:#ddd}
+.mobile-device small{color:#999;font-size:11px}
+.mobile-device-state{font-size:11px;color:#999;white-space:nowrap}
+.mobile-device-state[data-online="true"]{color:#9dcba7}
+.mobile-connection-note{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;max-width:90vw;padding:8px 14px;background:#513b30;color:#f4d5be;border-radius:10px;font-size:12px;text-align:center}
+.mobile-connection-note[hidden]{display:none}
+
+/* In-app confirmation, shared by native and browser clients. */
+.delete-chat-dialog{width:min(380px,calc(100vw - 32px));padding:24px;border:1px solid #454545;border-radius:16px;background:#292929;color:#eee;box-shadow:0 16px 60px #0006}
+.delete-chat-dialog::backdrop{background:#0008}
+.delete-chat-dialog h2{font-size:18px;font-weight:600;margin:0 0 10px}
+.delete-chat-dialog p{font-size:14px;line-height:1.5;color:#bcbcbc;margin:0 0 24px}
+.delete-chat-actions{display:flex;justify-content:flex-end;gap:8px}
+.delete-chat-actions button{border:0;border-radius:9px;padding:10px 18px;background:#3c3c3c;color:#eee;font:500 14px system-ui;cursor:pointer}
+.delete-chat-actions button:hover{background:#494949}
+.delete-chat-actions button:focus{outline:none}
+.delete-chat-actions button:focus-visible{outline:1px solid #aaa;outline-offset:2px}
+.delete-chat-actions .delete-chat-confirm{background:#a93c3c;color:#fff}
+.delete-chat-actions .delete-chat-confirm:hover{background:#bf4747}
+
+/* Native model path picker; ordinary browsers retain editable text paths. */
+.settings-path-control{display:flex;align-items:stretch;gap:6px;min-width:0;width:100%}
+.settings-path-control .settings-control{flex:1;min-width:0;width:0}
+.settings-browse{display:none;flex:none;width:36px;place-items:center;padding:0;border:1px solid #494949;border-radius:7px;background:#303030;color:#ddd;cursor:pointer}
+html[data-native-model-picker="true"] .settings-browse{display:grid}
+.settings-browse:hover{background:#414141}
+.settings-browse:disabled,.settings-control:disabled+.settings-browse{opacity:.45;pointer-events:none}
+.settings-browse svg{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+
+/* A visible keyboard indicator even for icon-only buttons and input controls. */
+:where(button,a[href],summary,[tabindex],textarea,input,select):focus-visible{outline:1px solid #aaa;outline-offset:2px}
+.composer textarea:focus-visible{outline:none}
+.composer:has(textarea:focus-visible){border-color:#aaa}
+
+/* Newly streamed text fades in; older text stays fully opaque. */
+::highlight(quantru-fade-1){color:color-mix(in srgb,currentColor 25%,transparent)}
+::highlight(quantru-fade-2){color:color-mix(in srgb,currentColor 48%,transparent)}
+::highlight(quantru-fade-3){color:color-mix(in srgb,currentColor 72%,transparent)}
+::highlight(quantru-fade-4){color:color-mix(in srgb,currentColor 90%,transparent)}
+
+/* Explicit focus marker for native GTK keyboard traversal. */
+[data-keyboard-focus]{outline:1px solid #aaa !important;outline-offset:2px}
+.composer textarea[data-keyboard-focus]{outline:none !important}
+.composer:has(textarea[data-keyboard-focus]){border-color:#aaa}
+
+.generation-metrics{margin-left:8px;font-size:11px;color:#999;line-height:1.4;font-variant-numeric:tabular-nums;white-space:normal}
+.generation-metrics[hidden]{display:none}

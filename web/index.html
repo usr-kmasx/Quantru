@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantru</title>
+<link rel="stylesheet" href="/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside class="quantru-panel" id="quantru-panel" aria-label="Side panel" inert>
+  <button type="button" class="panel-item new-chat"><span aria-hidden="true">+</span> New chat</button>
+  <div class="history-heading">Chats</div>
+  <div class="chat-list" aria-label="Chat history"></div>
+  <button type="button" class="panel-item more-chats" hidden>More chats</button>
+  <div class="history-note" role="status"></div>
+  <button class="panel-item mobile-pair-open" id="mobile-pair-open" type="button" title="Connect phone" aria-label="Connect phone" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></svg></button>
+  <button class="panel-item" id="llama-settings-open" type="button" aria-haspopup="dialog">llama.cpp</button>
+  <button class="panel-item" id="image-settings-open" type="button" aria-haspopup="dialog">stable-diffusion.cpp</button>
+</aside>
+<dialog class="delete-chat-dialog" aria-labelledby="delete-chat-title" aria-describedby="delete-chat-description">
+  <h2 id="delete-chat-title">Delete conversation?</h2>
+  <p id="delete-chat-description">This conversation will be permanently deleted.</p>
+  <form method="dialog" class="delete-chat-actions">
+    <button type="submit" value="cancel" autofocus>Cancel</button>
+    <button type="submit" value="delete" class="delete-chat-confirm">Delete</button>
+  </form>
+</dialog>
+<dialog class="mobile-pair-dialog" autofocus aria-labelledby="mobile-pair-title">
+  <header class="llama-settings-header"><h2 id="mobile-pair-title">Connect phone</h2><button type="button" class="llama-settings-close" aria-label="Close">×</button></header>
+  <div class="mobile-pair-body">
+    <p>Scan the QR code with your phone on the same Wi-Fi network.</p>
+    <img class="mobile-pair-qr" alt="Scan to connect to Quantru" hidden>
+    <span class="mobile-pair-expiry"></span>
+    <button type="button" class="mobile-pair-copy" hidden>Copy link</button>
+    <span class="mobile-pair-status" role="status"></span>
+    <div class="mobile-devices" aria-live="polite"></div>
+  </div>
+  <footer class="llama-settings-footer"><button type="button" class="mobile-pair-revoke" disabled>Revoke access</button></footer>
+</dialog>
+<dialog class="llama-settings" autofocus aria-labelledby="llama-settings-title">
+  <header class="llama-settings-header">
+    <h2 id="llama-settings-title">llama.cpp</h2>
+    <button class="llama-settings-close" type="button" aria-label="Close">×</button>
+  </header>
+  <div class="llama-settings-body">
+    <form id="llama-settings-form"></form>
+  </div>
+  <footer class="llama-settings-footer">
+    <span class="llama-settings-status" role="status"></span>
+    <button type="button" class="settings-reset">Reset defaults</button>
+    <button type="submit" form="llama-settings-form" class="settings-apply" disabled>Apply</button>
+  </footer>
+</dialog>
+<dialog class="llama-settings image-settings" autofocus aria-labelledby="image-settings-title">
+  <header class="llama-settings-header">
+    <h2 id="image-settings-title">stable-diffusion.cpp</h2>
+    <button class="llama-settings-close" type="button" aria-label="Close">×</button>
+  </header>
+  <div class="llama-settings-body">
+    <form id="image-settings-form"></form>
+  </div>
+  <footer class="llama-settings-footer">
+    <span class="llama-settings-status" role="status"></span>
+    <button type="button" class="settings-reset">Reset defaults</button>
+    <button type="submit" form="image-settings-form" class="settings-apply" disabled>Apply</button>
+  </footer>
+</dialog>
+<button class="quantru-logo" type="button" aria-label="Open side panel" aria-controls="quantru-panel" aria-expanded="false" title="Open side panel"><img src="/logo.svg" alt="" draggable="false"></button>
+<main>
+  <section class="messages" aria-live="polite"></section>
+  <div class="composer-dock">
+  <h1 class="welcome-title">Quantru</h1>
+  <div class="status" role="status"></div>
+  <div class="attachments" aria-live="polite"></div>
+  <form class="composer" aria-label="Message">
+    <button class="icon add" type="button" aria-label="Add attachment" title="Add attachment">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <textarea rows="1" placeholder="Type a message..." aria-label="Message"></textarea>
+    <div class="actions">
+      <button class="icon expand" type="button" aria-label="Expand editor" title="Expand editor"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg></button>
+      <div class="reasoning-control" hidden>
+        <button class="icon reasoning-toggle" type="button" title="Reasoning" aria-label="Reasoning" aria-expanded="false" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6m-5 3h4M8 14a6 6 0 1 1 8 0c-1 .8-1.5 2-1.5 3h-5c0-1-.5-2.2-1.5-3z"/></svg></button>
+        <div class="reasoning-menu" role="menu" hidden></div>
+      </div>
+      <button class="icon mic" type="button" aria-label="Microphone" title="Microphone (not connected yet)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg></button>
+      <button class="icon send" type="submit" aria-label="Send" title="Send" disabled><svg viewBox="0 0 24 24"><path d="M12 19V5m-7 7 7-7 7 7"/></svg></button>
+    </div>
+    <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,.wav,.mp3,.flac,.ogg,.m4a,.pdf,.docx,.xlsx,.txt,.md,.markdown,.csv,.tsv,.json,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.rst,.py,.js,.ts,.jsx,.tsx,.html,.css,.c,.h,.cpp,.hpp,.rs,.go,.java,.kt,.sh,.bash,.zsh,.fish,.sql,.rb,.php,.lua,.swift,.cs,.vue,.svelte,.cmake,.dockerfile" hidden id="files">
+  </form>
+  </div>
+</main>
+<dialog class="image-viewer" aria-label="Image preview">
+  <button class="viewer-close" type="button" aria-label="Close preview">×</button>
+  <img alt="Image preview">
+</dialog>
+<dialog class="html-preview" aria-label="HTML preview">
+  <header class="preview-header"><span>HTML Preview</span><button type="button" class="preview-close" aria-label="Close preview" title="Close preview">×</button></header>
+  <div class="preview-stage"></div>
+</dialog>
+<script src="/vendor/markdown-it.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/katex/katex.min.js"></script>
+<script src="/vendor/texmath.js"></script>
+<script src="/markdown.js"></script>
+<script src="/mobile.js"></script>
+<script src="/history.js"></script>
+<script src="/composer.js"></script>
+<script src="/voice.js"></script>
+<script src="/panel.js"></script>
+<script src="/settings.js"></script>
+<script src="/live.js"></script>
+</body>
+</html>
