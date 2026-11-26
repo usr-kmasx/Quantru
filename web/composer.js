@@ -419,8 +419,8 @@ function beginEdit(turn) {
   save.className = 'inline-edit-save';
   save.textContent = 'Send';
   function resize() {
-    field.style.height = 'auto';
-    field.style.height = Math.min(field.scrollHeight,240) + 'px';
+    field.style.height = '0px';
+    field.style.height = Math.max(32,Math.min(field.scrollHeight,240)) + 'px';
     save.disabled = !field.value.trim() && !(turn.files.length || turn.savedFiles?.length);
   }
   controls.append(cancel,save);
@@ -581,17 +581,10 @@ async function generate(turn, addUser) {
   const reply = bubble('assistant','…');
   turn.reply = reply;
   reply.classList.add('streaming');
-  let answer = '';
-  let thinking = '';
-  let outcome = 'complete';
-  let persisted = false;
-  const shellBlocks=new Map();
-  let thoughtBlock=null;
-  let roundThinking='';
-  const output=document.createElement('div');
-  reply.replaceChildren(output);
-  function finishThought(collapse=true){thoughtBlock?.finish(collapse);}
-  output.textContent = '…';
+  let outcome='complete',persisted=false,sawDone=false;
+  const record={answer:'',thinking:'',timeline:[],shell_runs:[],shell_drafts:{},status:'pending',generated_image:false};
+  initResponseTimeline(turn);
+  renderResponseTimeline(turn,record,true);
   turn.replyActions=actionBar(turn,'assistant');
   updateActions();
   try {
@@ -617,95 +610,32 @@ async function generate(turn, addUser) {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
-        if (data === '[DONE]') continue;
-        const chunk = JSON.parse(data);
+        if (data === '[DONE]'){sawDone=true;continue;}
+        const chunk=JSON.parse(data);
+        applyResponseChunk(record,chunk);
         if(chunk.generation_stats){turn.generation_stats=chunk.generation_stats;updateTokenStats(turn);}
-        if(chunk.shell_round){
-          finishThought();
-          thoughtBlock=null;
-          roundThinking='';
-        }
         if(chunk.shell_event){
           const event=chunk.shell_event;
-          if(event.type==='writing'){
-            finishThought();
-            if(!answer)output.textContent='';
-            let block=shellBlocks.get(event.draft_id);
-            if(!block){
-              block=appendShellRun(reply,{...event,status:'writing'},output);
-              shellBlocks.set(event.draft_id,block);
-            }else block.setCommand(event.command);
-            status.textContent='Writing command…';
-          }else if(event.type==='start'){
-            finishThought();
-            if(!answer)output.textContent='';
-            let block=shellBlocks.get(event.draft_id);
-            if(block){shellBlocks.delete(event.draft_id);block.start(event);}
-            else block=appendShellRun(reply,event,output);
-            shellBlocks.set(event.idx,block);
-            status.textContent='Running terminal command…';
-          }else{
-            const block=shellBlocks.get(event.idx);
-            if(block&&event.type==='output')block.appendOutput(event.text||'');
-            if(block&&event.type==='end'){block.finish(event.status,event.exit_code);status.textContent='';}
-          }
+          if(event.type==='writing')status.textContent='Writing command…';
+          else if(event.type==='start')status.textContent=event.kind==='view_image'?'Viewing image…':'Running terminal command…';
+          else if(event.type==='end')status.textContent='';
         }
-        if(chunk.shell_error)throw new Error(chunk.shell_error);
-        if(chunk.image_error)throw new Error(chunk.image_error);
-        if(chunk.image_tool_call){
-          finishThought();
-        }
-        if(chunk.image_status){
-          status.textContent=chunk.image_status;
-          if(!answer&&!turn.generated_image)output.textContent='';
-        }
-        if(chunk.image_generated){
-          turn.generated_image=true;
-          const textBeforeImage=answer;
-          answer+=(answer?'\n\n':'')+'[Generated image: '+(chunk.image_prompt||'')+']';
-          if(textBeforeImage)renderMarkdown(output,textBeforeImage,true);else output.textContent='';
-          appendGeneratedImage(reply,chatId,turn.seq);
-        }
-        const delta = chunk.choices?.[0]?.delta;
-        if (delta?.reasoning_content) {
-          thinking += delta.reasoning_content;
-          roundThinking += delta.reasoning_content;
-          if(!thoughtBlock)thoughtBlock=appendThoughtBlock(reply,output,true);
-          thoughtBlock.setText(roundThinking);
-          if(!answer)output.textContent = '';
-        }
-        if (delta?.content) {
-          finishThought();
-          answer += delta.content;
-          renderMarkdown(output, answer, false, scheduleFollow);
-        }
-        scheduleFollow();
+        if(chunk.image_status)status.textContent=chunk.image_status;
+        turn.generated_image=record.generated_image;
+        renderResponseTimeline(turn,record,true);
+        const error=chunk.shell_error||chunk.image_error||chunk.error;
+        if(error)throw new Error(typeof error==='object'?(error.message||'Generation failed'):error);
       }
     }
-    finishThought(false);
-    if(!turn.generated_image)renderMarkdown(output, answer, true);
-    turn.answer = answer;
-  } catch (error) {
-    if (request.signal.aborted) {
-      outcome='stopped';
-      for(const block of shellBlocks.values())if(block.running)block.finish('stopped',null);
-      finishThought();
-      if(!turn.generated_image)renderMarkdown(output, answer, true);
-      const note = document.createElement('div');
-      note.className = 'generation-stopped';
-      note.textContent = 'Generation stopped';
-      reply.append(note);
-      turn.answer = answer;
-    } else {
-      outcome='error';
-      finishThought();
-      if(shellBlocks.size){
-        for(const block of shellBlocks.values())if(block.running)block.finish('error',null);
-        const note=document.createElement('div');note.className='generation-stopped';note.textContent=error.message;reply.append(note);
-        turn.answer=answer;
-      }else{reply.textContent=error.message;turn.answer='';}
-    }
+    if(!sawDone)throw new Error('Model stream ended before completion.');
+    finishResponseRecord(record,'complete');
+    renderResponseTimeline(turn,record,false);
+  }catch(error){
+    outcome=request.signal.aborted?'stopped':'error';
+    finishResponseRecord(record,outcome,error.message);
+    renderResponseTimeline(turn,record,false);
   } finally {
+    turn.answer=record.answer;turn.thinking=record.thinking;
     if(!persisted){
       if(addUser){input.value=[text,input.value].filter(Boolean).join('\n');selectedFiles=[...pending,...selectedFiles];renderAttachments();}
       viewRevision=null;
@@ -713,7 +643,7 @@ async function generate(turn, addUser) {
       const index=turns.indexOf(turn);if(index>=0)turns.splice(index,1);
       historyNote.textContent='Message was not saved. Conversation will synchronize.';
     }
-    if(persisted)try{await saveFinish(turn,thinking,outcome);}catch(e){historyNote.textContent='Could not save response: '+e.message;}
+    if(persisted)try{await saveFinish(turn,record.thinking,outcome,record.error);}catch(e){historyNote.textContent='Could not save response: '+e.message;}
     const keepFollowing = followLatest && nearBottom();
     cancelFollow();
     status.textContent='';

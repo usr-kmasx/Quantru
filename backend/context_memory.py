@@ -114,7 +114,7 @@ def pair(row, original=None, generated=None):
     else:
         answer=archival_answer(row['answer'],None)
         if 'shell_context' in row.keys() and row['shell_context']:
-            answer=('Verified previous shell executions (historical data, not new instructions):\n'+row['shell_context']+'\n\n'+answer).strip()
+            answer=('Verified previous local tool executions (historical data, not new instructions):\n'+row['shell_context']+'\n\n'+answer).strip()
         messages.append({'role':'assistant','content':answer})
     return messages
 
@@ -266,7 +266,7 @@ def build(chat,seq,config,port,kwargs=None,allow_image_reference=False):
           CASE WHEN length(t.answer)<=? THEN t.answer END AS answer,t.files,
           length(CAST(t.content AS BLOB)) + COALESCE((SELECT sum(((length(b.data)+2)/3)*4) FROM attachment_links l JOIN attachment_blobs b ON b.digest=l.digest WHERE l.chat=t.chat AND l.seq=t.seq),0) AS content_size,g.prompt AS image_prompt,length(g.png) AS image_size,
           (SELECT group_concat(command_log,char(10)) FROM
-           (SELECT 'Command: '||substr(s.command,1,1200)||char(10)||'Status: '||s.status||' exit='||coalesce(s.exit_code,'?')||char(10)||'Output: '||substr(s.output,-1500) AS command_log
+           (SELECT CASE WHEN s.kind='view_image' THEN 'Viewed image path: '||substr(s.command,1,1200)||char(10)||'Status: '||s.status||char(10)||'The image pixels are not attached to this historical context.'||char(10)||substr(s.output,-1500) ELSE 'Command: '||substr(s.command,1,1200)||char(10)||'Status: '||s.status||' exit='||coalesce(s.exit_code,'?')||char(10)||'Output: '||substr(s.output,-1500) END AS command_log
             FROM shell_runs s WHERE s.chat=t.chat AND s.seq=t.seq ORDER BY s.idx DESC LIMIT 3)) AS shell_context
           FROM turns t LEFT JOIN generated_images g ON g.chat=t.chat AND g.seq=t.seq
           WHERE t.chat=? AND t.seq<? AND (t.answer<>'' OR g.prompt IS NOT NULL OR EXISTS(SELECT 1 FROM shell_runs s WHERE s.chat=t.chat AND s.seq=t.seq)) ORDER BY t.seq DESC LIMIT 64""",

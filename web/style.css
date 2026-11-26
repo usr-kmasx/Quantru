@@ -166,7 +166,7 @@ main:has(.message) .composer,main:has(.message) .attachments{width:min(calc(100%
 .messages .message.user.editing{width:min(100%,652px);max-width:100%;padding:0}
 .user-text[hidden],.message-actions[hidden]{display:none}
 .inline-editor{display:flex;flex-direction:column;gap:10px;min-width:0;width:100%;padding:12px 16px;background:#363636;border-radius:20px}
-.inline-edit-field{width:100%;min-height:32px;max-height:240px;resize:none;white-space:pre-wrap;font:inherit;color:inherit;background:transparent;border:0;outline:none;padding:2px 0}
+.inline-edit-field{flex:none;width:100%;min-height:32px;max-height:240px;resize:none;white-space:pre-wrap;font:inherit;color:inherit;background:transparent;border:0;outline:none;padding:2px 0}
 .inline-edit-actions{display:flex;justify-content:flex-end;gap:8px}
 .inline-edit-actions button{border:0;border-radius:18px;background:#494949;color:#eee;padding:7px 15px;font:13px system-ui;cursor:pointer}
 .inline-edit-actions button:hover{background:#595959}
@@ -400,6 +400,10 @@ main:has(.message) .welcome-title{display:none}
 .shell-run-command,.shell-run-output{font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:8px 12px;max-width:100%;user-select:text}
 .shell-run-output{border-top:1px solid #454545;max-height:320px;overflow:auto;overscroll-behavior:contain;color:#c9c9c9}
 .shell-run-output[hidden],.shell-run-cwd[hidden]{display:none}
+.viewed-image-run .shell-run-cwd{padding-bottom:8px}
+.viewed-image{display:block;width:auto;height:auto;max-width:min(calc(100% - 24px),320px);max-height:280px;object-fit:contain;margin:0 12px 12px;border-radius:8px;cursor:pointer}
+.viewed-image-unavailable{padding:8px 12px 12px;color:#aaa;font-size:12px}
+.viewed-image[hidden],.viewed-image-unavailable[hidden]{display:none}
 
 .quantru-panel>#mobile-pair-open{margin-top:auto;flex-shrink:0;width:40px;display:grid;place-items:center;padding:8px;min-height:38px}
 .quantru-panel>#llama-settings-open{margin-top:0}

@@ -49,6 +49,11 @@ def init():
             db.execute('ALTER TABLE turns ADD COLUMN generation_stats TEXT')
         if 'thinking_boundaries' not in {r[1] for r in db.execute('PRAGMA table_info(turns)')}:
             db.execute('ALTER TABLE turns ADD COLUMN thinking_boundaries TEXT')
+        if 'timeline' not in {r[1] for r in db.execute('PRAGMA table_info(turns)')}:
+            db.execute('ALTER TABLE turns ADD COLUMN timeline TEXT')
+        columns={r[1] for r in db.execute('PRAGMA table_info(shell_runs)')}
+        if 'kind' not in columns:db.execute("ALTER TABLE shell_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'shell'")
+        if 'image_digest' not in columns:db.execute('ALTER TABLE shell_runs ADD COLUMN image_digest TEXT')
         db.execute("UPDATE turns SET status='stopped' WHERE status='pending'")
         from . import context_memory
         context_memory.init(db)
@@ -83,11 +88,12 @@ def page(chat,before=None):
     with connect() as db:
         revision=db.execute('SELECT updated FROM chats WHERE id=?',(chat,)).fetchone()
         if not revision: raise ValueError('Chat not found')
-        rows=db.execute('SELECT seq,text,answer,thinking,status,files,generation_stats,thinking_boundaries,EXISTS(SELECT 1 FROM generated_images g WHERE g.chat=turns.chat AND g.seq=turns.seq) AS generated_image FROM turns WHERE chat=? AND seq<? ORDER BY seq DESC LIMIT ?', (chat,before or 1000000001,PAGE+1)).fetchall()
+        rows=db.execute('SELECT seq,text,answer,thinking,status,files,generation_stats,thinking_boundaries,timeline,EXISTS(SELECT 1 FROM generated_images g WHERE g.chat=turns.chat AND g.seq=turns.seq) AS generated_image FROM turns WHERE chat=? AND seq<? ORDER BY seq DESC LIMIT ?', (chat,before or 1000000001,PAGE+1)).fetchall()
         turns=[dict(r,files=json.loads(r['files']),generation_stats=json.loads(r['generation_stats']) if r['generation_stats'] else None) for r in reversed(rows[:PAGE])]
         for turn in turns:
             turn['thinking_boundaries']=json.loads(turn['thinking_boundaries']) if turn['thinking_boundaries'] else []
-            turn['shell_runs']=[dict(r) for r in db.execute('SELECT idx,command,cwd,output,exit_code,status FROM shell_runs WHERE chat=? AND seq=? ORDER BY idx',(chat,turn['seq']))]
+            turn['timeline']=json.loads(turn['timeline']) if turn['timeline'] is not None else None
+            turn['shell_runs']=[dict(r) for r in db.execute('SELECT idx,command,cwd,output,exit_code,status,kind FROM shell_runs WHERE chat=? AND seq=? ORDER BY idx',(chat,turn['seq']))]
     return {'turns':turns,'more':len(rows)>PAGE,'revision':revision[0]}
 
 def content(chat,seq):
@@ -112,7 +118,15 @@ def verify_generation(chat,seq,owner):
         row=db.execute('SELECT generation_id,status FROM turns WHERE chat=? AND seq=?',(ident(chat),seqnum(seq))).fetchone()
         if not row or row[0]!=owner or row[1]!='pending':raise ValueError('This message is no longer awaiting generation.')
 
-def mutate(op,d):
+def claim_generation(chat,seq,owner):
+    from . import chat_sync
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT generation_id,status FROM turns WHERE chat=? AND seq=?',(ident(chat),seqnum(seq))).fetchone()
+        if not row or row[0]!=owner or row[1]!='pending':raise ValueError('This message is no longer awaiting generation.')
+        chat_sync.start(chat,seq,owner)
+
+def mutate(op,d,authoritative=False):
     chat=ident(d['chat'])
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -162,7 +176,7 @@ def mutate(op,d):
             db.execute('DELETE FROM shell_runs WHERE chat=? AND seq=?',(chat,seq))
             db.execute("""INSERT INTO turns(chat,seq,text,content,files,generation_id) VALUES(?,?,?,?,?,?)
                  ON CONFLICT(chat,seq) DO UPDATE SET text=excluded.text,content=excluded.content,files=excluded.files,
-                 answer='',thinking='',status='pending',generation_stats=NULL,thinking_boundaries=NULL,generation_id=excluded.generation_id""",(chat,seq,text,json.dumps(text,ensure_ascii=False),json.dumps(files,ensure_ascii=False),owner))
+                 answer='',thinking='',status='pending',generation_stats=NULL,thinking_boundaries=NULL,timeline=NULL,generation_id=excluded.generation_id""",(chat,seq,text,json.dumps(text,ensure_ascii=False),json.dumps(files,ensure_ascii=False),owner))
             value=documents.store(db,chat,seq,value,prepared)
             value=attachment_store.store(db,chat,seq,value)
             db.execute('UPDATE turns SET content=? WHERE chat=? AND seq=?',(json.dumps(value,ensure_ascii=False),chat,seq))
@@ -174,10 +188,20 @@ def mutate(op,d):
             if not row or row[0]!=d.get('generation_id'):raise ValueError('Message was changed on another device.')
             if row[1]!='pending' and row[0] is not None:return {'revision':revision}
             live=chat_sync.get(chat)
-            metrics=live.get('generation_stats') if live else None
-            boundaries=live.get('thinking_boundaries',[]) if live else []
-            db.execute('UPDATE turns SET answer=?,thinking=?,status=?,generation_stats=?,thinking_boundaries=? WHERE chat=? AND seq=?',
-                       (d['answer'],d['thinking'],state,json.dumps(metrics) if metrics else None,json.dumps(boundaries) if boundaries else None,chat,seq))
+            if live and not authoritative:return {'revision':revision,'pending':True}
+            if live:
+                state='error' if live['failed'] else 'complete' if live['done'] else 'stopped'
+                answer=live['answer'];thinking=live['thinking']
+                metrics=live.get('generation_stats')
+                boundaries=live.get('thinking_boundaries',[])
+                timeline=chat_sync.final_timeline(live,state)
+            else:
+                answer=d['answer'];thinking=d['thinking']
+                metrics=None;boundaries=[];timeline=None
+                if state=='error' and not answer and not thinking and isinstance(d.get('error'),str):
+                    timeline=[{'id':1,'kind':'error','message':d['error'][:4000]}]
+            db.execute('UPDATE turns SET answer=?,thinking=?,status=?,generation_stats=?,thinking_boundaries=?,timeline=? WHERE chat=? AND seq=?',
+                       (answer,thinking,state,json.dumps(metrics) if metrics else None,json.dumps(boundaries) if boundaries else None,json.dumps(timeline,ensure_ascii=False) if timeline is not None else None,chat,seq))
         else: raise ValueError('Unknown operation')
         revision=time.time()
         db.execute('UPDATE chats SET updated=? WHERE id=?',(revision,chat))
@@ -223,10 +247,15 @@ def generated_image(chat,seq):
         row=db.execute('SELECT png FROM generated_images WHERE chat=? AND seq=?',(ident(chat),seqnum(seq))).fetchone()
         return row[0] if row else None
 
-def start_shell(chat,seq,idx,command,cwd):
+def start_shell(chat,seq,idx,command,cwd,kind='shell'):
     with connect() as db:
-        db.execute('INSERT INTO shell_runs(chat,seq,idx,command,cwd) VALUES(?,?,?,?,?)',(ident(chat),seqnum(seq),idx,command,cwd))
+        db.execute('INSERT INTO shell_runs(chat,seq,idx,command,cwd,kind) VALUES(?,?,?,?,?,?)',(ident(chat),seqnum(seq),idx,command,cwd,kind))
 
-def finish_shell(chat,seq,idx,output,code,status):
+def finish_shell(chat,seq,idx,output,code,status,image_digest=None):
     with connect() as db:
-        db.execute('UPDATE shell_runs SET output=?,exit_code=?,status=? WHERE chat=? AND seq=? AND idx=?',(output,code,status,ident(chat),seqnum(seq),idx))
+        db.execute('UPDATE shell_runs SET output=?,exit_code=?,status=?,image_digest=? WHERE chat=? AND seq=? AND idx=?',(output,code,status,image_digest,ident(chat),seqnum(seq),idx))
+
+def viewed_image_reference(chat,seq,idx):
+    with connect() as db:
+        row=db.execute("SELECT command,image_digest FROM shell_runs WHERE chat=? AND seq=? AND idx=? AND kind='view_image' AND status='complete' AND image_digest IS NOT NULL",(ident(chat),seqnum(seq),seqnum(idx))).fetchone()
+        return tuple(row) if row else None

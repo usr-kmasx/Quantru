@@ -30,6 +30,7 @@ MENU_XML="""<node><interface name="com.canonical.dbusmenu">
 <method name="AboutToShowGroup"><arg type="ai" direction="in"/><arg type="ai" direction="out"/><arg type="ai" direction="out"/></method>
 <property name="Version" type="u" access="read"/><property name="TextDirection" type="s" access="read"/><property name="Status" type="s" access="read"/><property name="IconThemePath" type="as" access="read"/>
 <signal name="LayoutUpdated"><arg type="u"/><arg type="i"/></signal>
+<signal name="ItemsPropertiesUpdated"><arg type="a(ia{sv})"/><arg type="a(ias)"/></signal>
 </interface></node>"""
 V=GLib.Variant
 
@@ -38,7 +39,8 @@ class Tray:
         self.app=app
         self.icon=icon
         self.revision=1
-        self.running=True
+        self.server_state="stopped"
+        self.window_visible=bool(app.window and app.window.get_visible())
         self.available=False
         self.bus=Gio.bus_get_sync(Gio.BusType.SESSION,None)
         self.item_info=Gio.DBusNodeInfo.new_for_xml(ITEM_XML)
@@ -75,9 +77,9 @@ class Tray:
         inv.return_value(V('()',()))
     def props(self,item):
         if item==0:return {'children-display':V('s','submenu')}
-        labels={1:'Open Quantru',2:'Stop server' if self.running else 'Start server',3:'Quit Quantru'}
+        labels={1:'Hide Quantru' if self.window_visible else 'Show Quantru',2:{'running':'Stop server','stopped':'Start server','starting':'Starting server…','stopping':'Stopping server…'}[self.server_state],3:'Quit Quantru'}
         if item not in labels:return {}
-        return {'label':V('s',labels[item]),'enabled':V('b',True),'visible':V('b',True)}
+        return {'label':V('s',labels[item]),'enabled':V('b',item!=2 or self.server_state in ('running','stopped')),'visible':V('b',True)}
     def layout(self,item,depth,names):
         props=self.props(item)
         if names:props={k:v for k,v in props.items() if k in names}
@@ -85,7 +87,8 @@ class Tray:
         return (item,props,children)
     def click(self,item,event):
         if event=='clicked':
-            action={1:self.app.tray_open,2:self.app.tray_toggle_server,3:self.app.tray_quit}.get(item)
+            action={1:self.app.tray_toggle_window,2:self.app.tray_toggle_server,3:self.app.tray_quit}.get(item)
+            if item==2 and self.server_state not in ("running","stopped"):return
             if action:GLib.idle_add(action)
     def menu_method(self,bus,sender,path,interface,method,args,inv):
         try:
@@ -102,17 +105,34 @@ class Tray:
             elif method=='EventGroup':
                 for item,event,_,_ in a[0]:self.click(item,event)
                 value=V('(ai)',([],))
-            elif method=='AboutToShow':value=V('(b)',(False,))
-            elif method=='AboutToShowGroup':value=V('(aiai)',([],[]))
+            elif method=='AboutToShow':
+                previous=self.revision
+                self.app.refresh_tray_state()
+                value=V('(b)',(previous!=self.revision,))
+            elif method=='AboutToShowGroup':
+                previous=self.revision
+                self.app.refresh_tray_state()
+                value=V('(aiai)',(a[0] if previous!=self.revision else [],[]))
             else:raise ValueError('Unknown menu method')
             inv.return_value(value)
         except Exception as e:inv.return_dbus_error('com.canonical.dbusmenu.Error',str(e))
     def menu_property(self,bus,sender,path,interface,name):
         return {'Version':V('u',3),'TextDirection':V('s','ltr'),'Status':V('s','normal'),'IconThemePath':V('as',[])}.get(name)
-    def set_running(self,running):
-        if self.running==running:return
-        self.running=running;self.revision+=1
+    def update_item(self,item):
+        self.revision+=1
+        self.bus.emit_signal(None,MENU,'com.canonical.dbusmenu','ItemsPropertiesUpdated',
+                             V('(a(ia{sv})a(ias))',([(item,self.props(item))],[])))
         self.bus.emit_signal(None,MENU,'com.canonical.dbusmenu','LayoutUpdated',V('(ui)',(self.revision,0)))
+    def set_window_visible(self,visible):
+        if self.window_visible==visible:return
+        self.window_visible=visible
+        self.update_item(1)
+    def set_server_state(self,state):
+        if self.server_state==state:return
+        self.server_state=state
+        self.update_item(2)
+    def set_running(self,running):
+        self.set_server_state('running' if running else 'stopped')
     def close(self):
         Gio.bus_unwatch_name(self.watch)
         for ident in self.ids:self.bus.unregister_object(ident)

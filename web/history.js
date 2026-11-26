@@ -143,8 +143,7 @@ function showSavedImage(url,name){
   if(viewerURL)URL.revokeObjectURL(viewerURL);
   viewerURL=null;viewerImage.src=url;viewerImage.alt=name;if(!viewer.open)viewer.showModal();
 }
-function appendGeneratedImage(reply,chat,seq){
-  if(reply.querySelector('.generated-image'))return;
+function appendGeneratedImage(reply,chat,seq,before=null){
   const url='/api/chats/generated-image?chat='+encodeURIComponent(chat)+'&seq='+seq;
   const image=document.createElement('img');
   image.className='generated-image';image.src=url;image.loading='lazy';
@@ -154,7 +153,7 @@ function appendGeneratedImage(reply,chat,seq){
   const download=document.createElement('a');download.className='generated-download';
   download.href=url;download.download='quantru-image.png';download.textContent='Download';
   const container=document.createElement('div');container.className='generated-result';
-  container.append(image,download);reply.append(container);
+  container.append(image,download);reply.insertBefore(container,before);return container;
 }
 // Each inference round owns its own thought block.
 function appendThoughtBlock(reply,before=null,active=false){
@@ -186,23 +185,34 @@ function splitThoughts(text,boundaries){
   if(offset<chars.length)parts.push({after,text:chars.slice(offset).join('')});
   return parts;
 }
-function syncThoughtBlocks(turn,record){
-  const runs=record.shell_runs||[];
-  const drafts=Object.values(record.shell_drafts||{});
-  for(const part of splitThoughts(record.thinking,record.thinking_boundaries)){
-    const next=runs.find(run=>run.idx>part.after);
-    const before=next?turn.remoteShells.get(next.idx)?.box:(drafts.length?turn.remoteShells.get(drafts[0].draft_id)?.box:turn.remoteOutput);
-    let block=turn.remoteThoughtBlocks.get(part.after);
-    if(!block){
-      block=appendThoughtBlock(turn.reply,before||null,false);
-      turn.remoteThoughtBlocks.set(part.after,block);
-    }else if(before&&block.details.nextSibling!==before){
-      turn.reply.insertBefore(block.details,before);
-    }
-    block.setText(part.text,record.status!=='pending'&&!record.version);
-  }
+function appendViewedImage(reply,record,before,seq){
+  const box=document.createElement('section');box.className='shell-run viewed-image-run';
+  const header=document.createElement('div');header.className='shell-run-header';
+  const title=document.createElement('span');title.textContent='View image';
+  const state=document.createElement('span');state.className='shell-run-status';
+  header.append(title,state);
+  const path=document.createElement('div');path.className='shell-run-cwd';path.textContent=record.command||'';
+  const output=document.createElement('div');output.className='shell-run-output';output.textContent=record.output||'';output.hidden=!output.textContent;
+  const image=document.createElement('img');image.className='viewed-image';image.hidden=true;image.loading='lazy';image.alt='Viewed image';image.tabIndex=0;image.setAttribute('role','button');
+  const unavailable=document.createElement('div');unavailable.className='viewed-image-unavailable';unavailable.textContent='Original image unavailable or changed.';unavailable.hidden=true;
+  const url='/api/chats/viewed-image?chat='+encodeURIComponent(chatId)+'&seq='+seq+'&idx='+record.idx;
+  image.onload=()=>{if(box.dataset.status==='complete'){image.hidden=false;unavailable.hidden=true;scheduleFollow();}};
+  image.onerror=()=>{image.hidden=true;if(box.dataset.status==='complete'){unavailable.hidden=false;scheduleFollow();}};
+  image.onclick=()=>showSavedImage(url,record.command||'Viewed image');
+  image.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();image.click();}};
+  box.append(header,path,output,image,unavailable);reply.insertBefore(box,before);
+  let requested=false;
+  const block={box,output,running:true,appendOutput(text){output.textContent+=text;output.hidden=!output.textContent;},finish(status){
+    block.running=status==='running';box.dataset.status=status;
+    state.textContent=status==='running'?'Viewing…':status==='complete'?'Viewed':status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':'Failed';
+    if(status==='complete'){
+      if(!requested){requested=true;image.hidden=false;image.src=url;}
+    }else{image.hidden=true;unavailable.hidden=true;}
+  }};
+  block.finish(record.status||'running');return block;
 }
-function appendShellRun(reply,record,before=null){
+function appendShellRun(reply,record,before=null,seq=null){
+  if(record.kind==='view_image')return appendViewedImage(reply,record,before,seq);
   const box=document.createElement('section');box.className='shell-run';
   const header=document.createElement('div');header.className='shell-run-header';
   const title=document.createElement('span');title.textContent='Terminal';
@@ -226,6 +236,133 @@ function appendShellRun(reply,record,before=null){
   block.finish(record.status||'running',record.exit_code);
   return block;
 }
+// Shared chronological renderer for the local stream, remote snapshots and archive.
+function legacyTimeline(record){
+  const result=[],runs=record.shell_runs||[];
+  const parts=splitThoughts(record.thinking,record.thinking_boundaries);
+  let id=0,offset=0,pi=0;
+  function thought(part){
+    const end=offset+Array.from(part.text).length;
+    result.push({id:++id,kind:'thinking',start:offset,end});offset=end;
+  }
+  for(const run of runs){
+    while(pi<parts.length&&parts[pi].after<run.idx)thought(parts[pi++]);
+    result.push({id:++id,kind:'tool',idx:run.idx});
+  }
+  while(pi<parts.length)thought(parts[pi++]);
+  let text=record.answer||'';
+  if(record.generated_image){
+    const marker=text.lastIndexOf('[Generated image: ');
+    if(marker>=0)text=text.slice(0,marker).trimEnd();
+  }
+  if(text)result.push({id:++id,kind:'text',start:0,end:Array.from(text).length});
+  if(record.generated_image)result.push({id:++id,kind:'generated_image'});
+  return result;
+}
+function initResponseTimeline(turn){
+  const anchor=document.createElement('div');anchor.hidden=true;
+  turn.reply.replaceChildren(anchor);turn.responseAnchor=anchor;
+  turn.responseBlocks=new Map();
+}
+function renderResponseTimeline(turn,record,pending=false){
+  if(!turn.responseAnchor)initResponseTimeline(turn);
+  const reply=turn.reply,anchor=turn.responseAnchor,blocks=turn.responseBlocks;
+  const steps=[...(Array.isArray(record.timeline)?record.timeline:legacyTimeline(record))];
+  if(pending)for(const id of Object.keys(record.shell_drafts||{}))steps.push({id:'draft:'+id,kind:'draft',draft_id:id});
+  const answers=Array.from(record.answer||''),thoughts=Array.from(record.thinking||'');
+  const runs=new Map((record.shell_runs||[]).map(r=>[r.idx,r]));
+  const drafts=record.shell_drafts||{};
+  const ordered=[],seen=new Set();
+  const active=pending?steps.at(-1)?.id:null;
+  function obtain(id,kind,create){
+    let block=blocks.get(id);
+    if(block&&block.kind!==kind){block.box.remove();blocks.delete(id);block=null;}
+    if(!block){block=create();block.kind=kind;blocks.set(id,block);}
+    seen.add(id);ordered.push(block.box);return block;
+  }
+  function note(id,kind,text){
+    const block=obtain(id,kind,()=>{const box=document.createElement('div');box.className='generation-stopped';reply.insertBefore(box,anchor);return {box};});
+    if(block.box.textContent!==text)block.box.textContent=text;
+  }
+  for(const item of steps){
+    const id=item.id;
+    if(item.kind==='thinking'||item.kind==='text'){
+      const thinking=item.kind==='thinking';
+      const value=(thinking?thoughts:answers).slice(item.start,item.end).join('');
+      const running=active===id;
+      const block=obtain(id,item.kind,()=>{
+        if(thinking){const thought=appendThoughtBlock(reply,anchor,running);return {box:thought.details,thought};}
+        const box=document.createElement('div');reply.insertBefore(box,anchor);return {box};
+      });
+      if(thinking){
+        if(block.value!==value||block.running!==running)block.thought.setText(value,!running);
+        if(block.running&&!running)block.thought.finish();
+      }else if(block.value!==value||block.running!==running)renderMarkdown(block.box,value,!running,scheduleFollow);
+      block.value=value;block.running=running;
+    }else if(item.kind==='tool'||item.kind==='draft'||item.kind==='unfinished'){
+      const r=item.kind==='tool'?runs.get(item.idx):item.kind==='draft'?drafts[item.draft_id]:item;
+      if(!r)continue;
+      const status=item.kind==='draft'?'writing':r.status;
+      const block=obtain(id,item.kind,()=>appendShellRun(reply,{...r,status},anchor,turn.seq));
+      if(item.kind!=='tool')block.setCommand?.(r.command);
+      if(block.output.textContent!==(r.output||'')){
+        const text=r.output||'';
+        if(text.startsWith(block.output.textContent))block.appendOutput(text.slice(block.output.textContent.length));
+        else{block.output.textContent=text;block.output.hidden=!text;}
+      }
+      block.finish(status,r.exit_code);
+    }else if(item.kind==='generated_image'){
+      obtain(id,item.kind,()=>({box:appendGeneratedImage(reply,chatId,turn.seq,anchor)}));
+    }else if(item.kind==='error'){
+      note(id,'error',item.message||'Generation failed');
+    }
+  }
+  if(!pending&&record.status==='stopped')note('stopped','stopped','Generation stopped');
+  if(!pending&&record.status==='error'&&!steps.some(s=>s.kind==='error'))note('error','error',record.error||'Generation failed');
+  if(pending&&!ordered.length)note('pending','pending','…');
+  for(const [id,block] of blocks)if(!seen.has(id)){block.box.remove();blocks.delete(id);}
+  let before=anchor;
+  for(let i=ordered.length-1;i>=0;i--){
+    const box=ordered[i];if(box.nextSibling!==before)reply.insertBefore(box,before);before=box;
+  }
+  scheduleFollow();
+}
+// Client state follows server-authored timeline metadata. Text and tool payloads
+// remain separate so the timeline never duplicates their contents.
+function applyResponseChunk(record,chunk){
+  const delta=chunk.choices?.[0]?.delta||{};
+  record.thinking+=(delta.reasoning_content||'');
+  if(chunk.answer_break)record.answer+='\n\n';
+  record.answer+=(delta.content||'');
+  if(chunk.image_generated){
+    record.generated_image=true;
+    record.answer+=(record.answer?'\n\n':'')+'[Generated image: '+(chunk.image_prompt||'')+']';
+  }
+  const e=chunk.shell_event;
+  if(e){
+    if(e.type==='writing')record.shell_drafts[e.draft_id]={draft_id:e.draft_id,command:e.command,status:'writing'};
+    else if(e.type==='start'){
+      delete record.shell_drafts[e.draft_id];
+      record.shell_runs.push({...e,status:'running',output:'',exit_code:null});
+    }else{
+      const r=record.shell_runs.find(r=>r.idx===e.idx);
+      if(r){if(e.type==='output')r.output+=e.text||'';else if(e.type==='end'){r.status=e.status;r.exit_code=e.exit_code;}}
+    }
+  }
+  if(Array.isArray(chunk.timeline))record.timeline=chunk.timeline;
+  if(chunk.generation_stats)record.generation_stats=chunk.generation_stats;
+}
+function finishResponseRecord(record,state,error){
+  record.status=state;
+  for(const r of record.shell_runs)if(r.status==='running')r.status=state==='stopped'?'stopped':'error';
+  for(const draft of Object.values(record.shell_drafts||{})){
+    const id=Math.max(0,...record.timeline.map(t=>Number(t.id)||0))+1;
+    const errorIndex=record.timeline.findIndex(t=>t.kind==='error');
+    record.timeline.splice(errorIndex<0?record.timeline.length:errorIndex,0,{id,kind:'unfinished',command:draft.command||'',status:state==='stopped'?'stopped':'error'});
+  }
+  record.shell_drafts={};
+  if(error&&!record.timeline?.some(t=>t.kind==='error'))record.error=error;
+}
 function restoreTurn(record){
   const turn={...record,files:[],savedFiles:record.files,content:null,saved:true,recordKey:JSON.stringify(record)};
   const user=bubble('user','');turn.userBubble=user;
@@ -241,20 +378,9 @@ function restoreTurn(record){
   }
   turn.userActions=actionBar(turn,'user');
   const reply=bubble('assistant','');turn.reply=reply;
-  turn.remoteThoughtBlocks=new Map();
-  turn.remoteShells=new Map();
-  for(const run of turn.shell_runs||[])turn.remoteShells.set(run.idx,appendShellRun(reply,run));
-  if(turn.generated_image){
-    const anchor=document.createElement('div');anchor.hidden=true;reply.append(anchor);turn.remoteOutput=anchor;
-    appendGeneratedImage(reply,chatId,turn.seq);
-  }
-  else if(turn.answer||turn.status==='pending'){
-    const output=document.createElement('div');reply.append(output);turn.remoteOutput=output;
-    if(turn.answer)renderMarkdown(output,turn.answer,true);else output.textContent='…';
-  }
-  syncThoughtBlocks(turn,turn);
+  initResponseTimeline(turn);
+  renderResponseTimeline(turn,turn,turn.status==='pending');
   if(turn.status==='pending')reply.classList.add('streaming');
-  if(turn.status!=='complete'&&turn.status!=='pending'){const note=document.createElement('div');note.className='generation-stopped';note.textContent=turn.status==='error'?'Generation failed':'Generation stopped';reply.append(note);}
   turn.replyActions=actionBar(turn,'assistant');
   return turn;
 }
@@ -324,10 +450,11 @@ async function saveStart(turn){
   chatRevision=saved.revision;
   turn.saved=true;turn.savedFiles=media;nextSeq=turn.seq+1;rememberChat();refreshChats();
 }
-async function saveFinish(turn,thinking,state){
+async function saveFinish(turn,thinking,state,error){
   if(!turn.saved)return;
-  const saved=await archiveRequest('/finish',{chat:chatId,seq:turn.seq,answer:turn.answer,thinking,status:state,generation_id:turn.generationId});
+  const saved=await archiveRequest('/finish',{chat:chatId,seq:turn.seq,answer:turn.answer,thinking,status:state,error,generation_id:turn.generationId});
   chatRevision=saved.revision;
+  if(saved.pending)remotePending=true;
   turn.thinking=thinking;turn.status=state;
   // File payloads now live in SQLite, not the active JS history.
   turn.content=null;turn.files=[];
@@ -387,38 +514,12 @@ function showRemoteLive(live){
   if(!turn||turn.status!=='pending')return;
   liveVersion=version;
   if(live.generation_stats){turn.generation_stats=live.generation_stats;updateTokenStats(turn);}
-  if(turn.remoteOutput){
-    if(turn.answer!==live.answer){
-      turn.answer=live.answer;
-      renderMarkdown(turn.remoteOutput,live.generated_image?live.answer.replace(/\[Generated image: [^\]]*\]$/,''):live.answer,false,scheduleFollow);
-    }else if(live.thinking&&!live.answer)turn.remoteOutput.textContent='';
-  }
-  turn.thinking=live.thinking;
-  for(const draft of Object.values(live.shell_drafts||{})){
-    let block=turn.remoteShells.get(draft.draft_id);
-    if(!block){
-      block=appendShellRun(turn.reply,draft,turn.remoteOutput||null);turn.remoteShells.set(draft.draft_id,block);
-    }else block.setCommand(draft.command);
-  }
-  for(const run of live.shell_runs||[]){
-    let block=turn.remoteShells.get(run.idx);
-    const draft=turn.remoteShells.get(run.draft_id);
-    if(draft){
-      turn.remoteShells.delete(run.draft_id);
-      if(block)draft.box.remove();else{block=draft;block.start(run);turn.remoteShells.set(run.idx,block);}
-    }
-    if(!block){
-      block=appendShellRun(turn.reply,run,turn.remoteOutput||null);turn.remoteShells.set(run.idx,block);
-    }
-    if(block.output.textContent!==run.output){
-      if(run.output.startsWith(block.output.textContent))block.appendOutput(run.output.slice(block.output.textContent.length));
-      else{block.output.textContent=run.output;block.output.hidden=!run.output;}
-    }
-    block.finish(run.status,run.exit_code);
-  }
-  syncThoughtBlocks(turn,live);
-  if(live.generated_image)appendGeneratedImage(turn.reply,chatId,turn.seq);
-  scheduleFollow();
+  if(!turn.hasLiveTimeline){initResponseTimeline(turn);turn.hasLiveTimeline=true;}
+  turn.answer=live.answer;turn.thinking=live.thinking;
+  const pending=!live.done&&!live.failed;
+  if(pending)renderResponseTimeline(turn,live,true);
+  else{const final={...live,timeline:[...(live.timeline||[])],shell_runs:(live.shell_runs||[]).map(r=>({...r}))};finishResponseRecord(final,live.failed?'error':'complete');renderResponseTimeline(turn,final,false);}
+
 }
 async function syncTick(){
   try{

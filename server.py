@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import hashlib, os
+import hashlib, os, http.client
 import json, urllib.request, urllib.error, threading, signal, time
 from backend import engine, settings, voice_capture, chat_history, context_memory, image_generation, image_settings, reasoning, shell_tool, mobile_access, chat_sync, engine_updates, token_stats
 from urllib.parse import urlparse, parse_qs
@@ -18,6 +18,16 @@ IDLE_TIMEOUT = 15 * 60
 last_activity = time.monotonic()
 sleeping = True
 first_wake = True
+
+def read_model_stream(response):
+    """Distinguish upstream read failures from a disconnected browser."""
+    stream=iter(response)
+    while True:
+        try:line=next(stream)
+        except StopIteration:return
+        except (OSError,http.client.HTTPException) as e:
+            raise RuntimeError('Model connection failed while streaming.') from e
+        yield line
 
 def stop_engine(p):
     if p is not None and p.poll() is None:
@@ -215,7 +225,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(403);return False
             allowed=path.path in ('/v1/chat/completions','/api/chats/begin','/api/chats/finish','/api/chats/delete','/api/chats/rename','/api/shell/stop')
         else:
-            allowed=(path.path in ('/','/index.html','/__version','/api/health','/api/reasoning','/api/image/status','/api/voice/status','/api/chats','/api/chats/page','/api/chats/content','/api/chats/media','/api/chats/generated-image','/api/chats/sync','/api/mobile/heartbeat') or
+            allowed=(path.path in ('/','/index.html','/__version','/api/health','/api/reasoning','/api/image/status','/api/voice/status','/api/chats','/api/chats/page','/api/chats/content','/api/chats/media','/api/chats/generated-image','/api/chats/viewed-image','/api/chats/sync','/api/mobile/heartbeat') or
                 (not path.path.startswith('/api/') and self.static_allowed(path.path)))
         if not allowed:self.send_error(403)
         return allowed
@@ -326,6 +336,7 @@ class Handler(SimpleHTTPRequestHandler):
         session=None
         live_chat=None
         owner=None
+        headers_sent=False
         try:
             n=int(self.headers['Content-Length'])
             if not 0<n<=64*1024*1024:raise ValueError('Invalid request size.')
@@ -333,8 +344,7 @@ class Handler(SimpleHTTPRequestHandler):
             archive=payload.pop('archive',None)
             owner=payload.pop('generation_id',None)
             if archive is not None and owner is not None:
-                chat_history.verify_generation(archive['chat'],archive['seq'],owner)
-                chat_sync.start(archive['chat'],archive['seq'],owner)
+                chat_history.claim_generation(archive['chat'],archive['seq'],owner)
                 live_chat=archive['chat']
                 self.live_chat=live_chat
             image_permission=payload.pop('image_tool',None)
@@ -347,6 +357,7 @@ class Handler(SimpleHTTPRequestHandler):
             if type(allow_shell) is not bool:raise ValueError('Invalid shell permission.')
             if allow_shell:
                 if archive is None or not self.shell_request_allowed():
+                    chat_sync.event(live_chat,{'error':'Local shell authorization required.'})
                     return self.json_response(403,{'error':{'message':'Local shell authorization required.'}})
                 if image_permission:raise ValueError('Enable only one tool at a time.')
                 with state_lock:
@@ -388,27 +399,51 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(response.status)
                 self.send_header('Content-Type', response.headers.get('Content-Type','application/json'))
                 self.end_headers()
-                for line in response:
+                headers_sent=True
+                saw_done=False
+                stream_failed=False
+                for line in read_model_stream(response):
+                    if line.startswith(b'data:') and line[5:].strip()==b'[DONE]':saw_done=True
                     if payload.get('stream') and line.startswith(b'data:'):
                         try:
                             chunk=json.loads(line[5:].strip())
                             if isinstance(chunk,dict):
+                                stream_failed=bool(chunk.get('error'))
                                 metrics=stats.update(chunk)
                                 if metrics:chunk['generation_stats']=metrics;line=('data: '+json.dumps(chunk,ensure_ascii=False)+'\n').encode()
-                        except (ValueError,TypeError):pass
-                    chat_sync.line(live_chat,line)
+                        except (ValueError,TypeError):
+                            if line[5:].strip() not in (b'[DONE]',b''):raise ValueError('Invalid model stream data.')
+                    line=chat_sync.line(live_chat,line)
                     self.wfile.write(line)
                     self.wfile.flush()
+                    if stream_failed:break
+                if payload.get('stream') and not saw_done and not stream_failed:
+                    chunk={'error':{'message':'Model stream ended before completion.'}}
+                    chat_sync.event(live_chat,chunk)
+                    self.wfile.write(('data: '+json.dumps(chunk,ensure_ascii=False)+'\n\n').encode());self.wfile.flush()
         except (ValueError,KeyError,TypeError) as e:
+            chunk={'error':{'message':str(e)}}
+            chat_sync.event(live_chat,chunk)
+            if headers_sent:
+                try:self.wfile.write(('data: '+json.dumps(chunk,ensure_ascii=False)+'\n\n').encode());self.wfile.flush()
+                except OSError:pass
+                return
             return self.json_response(400,{'error':{'message':str(e)}})
         except (BrokenPipeError, ConnectionResetError, InterruptedError):
             pass
         except urllib.error.HTTPError as e:
+            chat_sync.event(live_chat,{'error':str(e)})
             self.send_response(e.code)
             self.send_header('Content-Type','application/json')
             self.end_headers()
             self.wfile.write(e.read())
-        except OSError:
+        except (OSError,RuntimeError,http.client.HTTPException) as e:
+            chunk={'error':{'message':str(e) if isinstance(e,RuntimeError) else 'Model connection failed.'}}
+            chat_sync.event(live_chat,chunk)
+            if headers_sent:
+                try:self.wfile.write(('data: '+json.dumps(chunk,ensure_ascii=False)+'\n\n').encode());self.wfile.flush()
+                except OSError:pass
+                return
             self.send_response(503)
             self.send_header('Content-Type','application/json')
             self.end_headers()
@@ -422,7 +457,7 @@ class Handler(SimpleHTTPRequestHandler):
                     if entry:
                         state='error' if entry['failed'] else 'complete' if entry['done'] else 'stopped'
                         chat_history.mutate('finish',{'chat':live_chat,'seq':entry['seq'],'generation_id':owner,
-                            'answer':entry['answer'],'thinking':entry['thinking'],'status':state,'generation_stats':entry.get('generation_stats')})
+                            'answer':entry['answer'],'thinking':entry['thinking'],'status':state,'generation_stats':entry.get('generation_stats')},authoritative=True)
                 except (ValueError,OSError) as e:print('Sync finish:',e,flush=True)
                 finally:chat_sync.finish(live_chat,owner)
 
@@ -439,7 +474,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(('data: '+json.dumps(chunk,ensure_ascii=False)+'\n\n').encode())
             self.wfile.flush()
         messages=[dict(m) for m in payload['messages']]
-        instruction=shell_tool.INSTRUCTION+'\n'+image_generation.UNAVAILABLE_INSTRUCTION
+        counter=context_memory.Engine(engine.PORT,payload.get('chat_template_kwargs'))
+        vision=counter.has_vision()
+        instruction=shell_tool.INSTRUCTION+'\n'+image_generation.UNAVAILABLE_INSTRUCTION+'\n'+(shell_tool.VIEW_INSTRUCTION if vision else shell_tool.NO_VISION_INSTRUCTION)
         if messages and messages[0]['role']=='system':
             messages[0]['content']=instruction+'\n\n'+messages[0]['content']
         else:messages.insert(0,{'role':'system','content':instruction})
@@ -447,8 +484,10 @@ class Handler(SimpleHTTPRequestHandler):
         rounds=[]
         stats=token_stats.TokenStats.for_engine(engine.PORT)
         idx=0
-        tools=[shell_tool.TOOL]
-        counter=context_memory.Engine(engine.PORT,payload.get('chat_template_kwargs'))
+        last_boundary=0
+        pending_views={}
+        chat,seq=archive['chat'],archive['seq']
+        tools=[shell_tool.TOOL]+([shell_tool.VIEW_TOOL] if vision else [])
         budget=current_config['context']-min(512,max(128,current_config['context']//4))
         try:
             while True:
@@ -458,23 +497,43 @@ class Handler(SimpleHTTPRequestHandler):
                 while counter.count(base+[m for group in rounds for m in group],tools)>budget:
                     if len(base)>2:base=base[:1]+base[2:]
                     elif len(rounds)>1:rounds.pop(0)
+                    elif rounds and any(m['role']=='tool' and isinstance(m['content'],list) for m in rounds[-1]):
+                        # Do not abort the whole request if a visual result cannot fit.
+                        # The model receives an explicit error for the omitted preview.
+                        for m in reversed(rounds[-1]):
+                            if m['role']=='tool' and isinstance(m['content'],list):
+                                m['content']=json.dumps({'status':'error','error':'Image preview does not fit the remaining model context. Increase Context length or inspect fewer images.'})
+                                break
                     else:raise ValueError('Shell conversation exceeded model context. Continue in a new message.')
                     while len(base)>2 and base[1]['role']!='user':base.pop(1)
                 plan={**payload,'messages':base+[m for group in rounds for m in group],
                       'tools':tools,'tool_choice':'auto','stream':True}
+                # Finish visual steps only after deciding what fits the next inference.
+                for step,(message,reference) in list(pending_views.items()):
+                    content=message['content']
+                    success=isinstance(content,list)
+                    error='' if success else json.loads(content).get('error','Image unavailable.')
+                    state='complete' if success else 'error'
+                    chat_history.finish_shell(chat,seq,step,error,None,state,reference.get('digest') if success else None)
+                    pending_views.pop(step)
+                    if error:send_event(shell_event={'type':'output','idx':step,'text':error})
+                    send_event(shell_event={'type':'end','idx':step,'status':state,'exit_code':None})
                 stats.next_round()
-                if idx:send_event(shell_round={'after':idx})
+                if idx>last_boundary:
+                    send_event(shell_round={'after':idx})
+                    last_boundary=idx
                 calls={}
                 finish=None
+                saw_done=False
                 text=''
                 thought=''
                 req=urllib.request.Request(f'http://127.0.0.1:{engine.PORT}/v1/chat/completions',data=json.dumps(plan).encode(),headers={'Content-Type':'application/json'})
                 with urllib.request.urlopen(req,timeout=300) as response:
-                    for line in response:
+                    for line in read_model_stream(response):
                         session.check()
                         if not line.startswith(b'data:'):continue
                         raw=line[5:].strip()
-                        if raw==b'[DONE]':break
+                        if raw==b'[DONE]':saw_done=True;break
                         chunk=json.loads(raw)
                         if chunk.get('error'):raise RuntimeError(str(chunk['error']))
                         metrics=stats.update(chunk)
@@ -498,18 +557,41 @@ class Handler(SimpleHTTPRequestHandler):
                                     fn['preview']=preview
                                     send_event(shell_event={'type':'writing','draft_id':fn['draft_id'],'command':preview})
                         finish=choice.get('finish_reason') or finish
-                if not calls:break
+                if not saw_done or not finish:raise RuntimeError('Model stream ended before completion.')
+                if not calls:
+                    if finish=='tool_calls':raise RuntimeError('Missing shell tool call.')
+                    break
                 if finish!='tool_calls':raise RuntimeError('Incomplete shell tool call.')
                 assistant={'role':'assistant','content':text,'tool_calls':[]}
                 if thought:assistant['reasoning_content']=thought
                 group=[assistant]
+                viewed=0
                 for key in sorted(calls):
                     fn=calls[key]
-                    if fn['name']!='run_shell':raise ValueError('Unexpected shell tool.')
+                    if fn['name'] not in ('run_shell','view_image'):raise ValueError('Unexpected shell tool.')
                     id=fn['id'] or uuid.uuid4().hex[:12]
                     assistant['tool_calls'].append({'id':id,'type':'function','function':{'name':fn['name'],'arguments':fn['arguments']}})
                     session.check()
                     args=json.loads(fn['arguments'])
+                    if fn['name']=='view_image':
+                        viewed+=1
+                        idx+=1
+                        path=args.get('path','') if isinstance(args,dict) else ''
+                        path=path if isinstance(path,str) else ''
+                        chat_history.start_shell(chat,seq,idx,path,'',kind='view_image')
+                        reference={}
+                        message={'role':'tool','tool_call_id':id,'content':''}
+                        pending_views[idx]=(message,reference)
+                        send_event(shell_event={'type':'start','idx':idx,'kind':'view_image','command':path,'cwd':''})
+                        if not vision:
+                            content=json.dumps({'status':'error','error':'The current chat model does not support vision.'})
+                        elif viewed>shell_tool.MAX_VIEW_PER_ROUND:
+                            content=json.dumps({'status':'error','error':'At most four image previews per tool round. Inspect fewer images.'})
+                        else:
+                            content=shell_tool.view_image(session,args,reference=reference)
+                        message['content']=content
+                        group.append(message)
+                        continue
                     command,cwd=shell_tool.arguments(args)
                     idx+=1
                     chat,seq=archive['chat'],archive['seq']
@@ -535,11 +617,15 @@ class Handler(SimpleHTTPRequestHandler):
             print('Shell tool:',e,flush=True)
             try:send_event(shell_error=str(e))
             except (OSError,InterruptedError):pass
+        finally:
+            for step in pending_views:
+                chat_history.finish_shell(chat,seq,step,'',None,'stopped' if session.cancelled.is_set() else 'error')
 
     def image_chat(self,payload,archive,current_config):
         global process,image_busy
         with state_lock:
             if active_requests!=1 or image_busy or voice_capture.session:
+                chat_sync.event(getattr(self,'live_chat',None),{'error':'Wait until other requests finish.'})
                 return self.json_response(409,{'error':{'message':'Wait until other requests finish.'}})
             image_busy=True
         headers_sent=False
@@ -552,6 +638,7 @@ class Handler(SimpleHTTPRequestHandler):
             send_event(image_status=text)
         try:
             if not image_generation.available():
+                chat_sync.event(getattr(self,'live_chat',None),{'error':'Image backend unavailable.'})
                 return self.json_response(503,{'error':{'message':'Image backend unavailable.'}})
             self.send_response(200)
             self.send_header('Content-Type','text/event-stream')
@@ -570,15 +657,16 @@ class Handler(SimpleHTTPRequestHandler):
             # and reasoning as they arrive, and collect native tool deltas.
             calls={}
             finish=None
+            saw_done=False
             visible_text=''
             stats=token_stats.TokenStats.for_engine(engine.PORT)
             req=urllib.request.Request(f'http://127.0.0.1:{engine.PORT}/v1/chat/completions',
                 data=json.dumps(plan).encode(),headers={'Content-Type':'application/json'})
             with urllib.request.urlopen(req,timeout=300) as response:
-                for line in response:
+                for line in read_model_stream(response):
                     if not line.startswith(b'data:'):continue
                     raw=line[5:].strip()
-                    if raw==b'[DONE]':break
+                    if raw==b'[DONE]':saw_done=True;break
                     chunk=json.loads(raw)
                     if chunk.get('error'):raise RuntimeError(str(chunk['error']))
                     metrics=stats.update(chunk)
@@ -596,6 +684,8 @@ class Handler(SimpleHTTPRequestHandler):
                         for key,value in (call.get('function') or {}).items():
                             if key in fn and isinstance(value,str):fn[key]+=value
                     finish=choice.get('finish_reason') or finish
+            if not saw_done or not finish:raise RuntimeError('Model stream ended before completion.')
+            if finish=='tool_calls' and not calls:raise RuntimeError('Missing image tool call.')
             if calls and finish=='tool_calls':
                 fn=calls[min(calls)]
                 if fn['name']!='generate_image':raise ValueError('Unexpected tool.')
@@ -657,6 +747,15 @@ class Handler(SimpleHTTPRequestHandler):
                     raw=chat_history.generated_image(q['chat'][0],int(q['seq'][0]))
                     if raw is None:return self.json_response(404,{'error':'Image not found'})
                     self.send_response(200);self.send_header('Content-Type','image/png');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
+                if path.path=='/api/chats/viewed-image':
+                    # Only recorded successful views, never an arbitrary client-supplied path.
+                    reference=chat_history.viewed_image_reference(q['chat'][0],int(q['seq'][0]),int(q['idx'][0]))
+                    if not reference:return self.json_response(404,{'error':'Image reference not found'})
+                    result=shell_tool.view_image(shell_tool.Session(),{'path':reference[0]},expected_digest=reference[1])
+                    if not isinstance(result,list):return self.json_response(404,{'error':'Original image unavailable or changed'})
+                    import base64
+                    raw=base64.b64decode(result[1]['image_url']['url'].split(',',1)[1],validate=True)
+                    self.send_response(200);self.send_header('Content-Type','image/png');self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
                 if path.path=='/api/chats/media':
                     value=chat_history.content(q['chat'][0],int(q['seq'][0]))
                     import base64

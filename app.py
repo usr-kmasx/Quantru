@@ -60,6 +60,7 @@ class Quantru(Adw.Application):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
         self.window=Adw.ApplicationWindow(application=self,title='Quantru')
         self.window.connect('close-request',self.close_window)
+        self.window.connect('notify::visible',self.window_visibility_changed)
         self.window.set_icon_name(APP_ID)
         self.window.set_default_size(1000,650)
         self.window.set_size_request(360,420)
@@ -113,6 +114,9 @@ class Quantru(Adw.Application):
             '.markdown code {font-family: "DejaVu Sans Mono", monospace, "Noto Color Emoji" !important; word-spacing: normal !important;} '
             'html,body,main {background-color:#242424 !important;} '
             '.html-preview .preview-header {height:86px !important; padding-top:44px !important;} '
+            '.image-viewer .viewer-close {top:60px !important; z-index:1;} '
+            '.image-viewer[open] {padding-top:44px !important;} '
+            '.image-viewer > img {max-height:calc(100dvh - 108px) !important;} '
             'main:has(.message) .composer-dock {align-self:stretch; width:auto !important; background-color:#242424 !important;} '
             '* {scrollbar-color: auto !important; scrollbar-width: auto !important;} '
             '*::-webkit-scrollbar {width: 5px; height: 5px;} '
@@ -175,7 +179,7 @@ class Quantru(Adw.Application):
     def start_backend(self):
         if self.stopping:return
         self.server_paused=False
-        if self.tray:self.tray.set_running(True)
+        if self.tray:self.tray.set_server_state('starting')
         if self.poll_source:
             GLib.source_remove(self.poll_source)
             self.poll_source=0
@@ -185,6 +189,7 @@ class Quantru(Adw.Application):
         self.stack.set_visible_child_name('waiting')
         self.start_time=time.monotonic()
         if web_available():
+            if self.tray:self.tray.set_running(True)
             self.view.load_uri(URL)
             return
         try:
@@ -203,6 +208,7 @@ class Quantru(Adw.Application):
     def poll_backend(self):
         if web_available():
             self.poll_source=0
+            if self.tray:self.tray.set_running(True)
             self.view.load_uri(URL)
             return GLib.SOURCE_REMOVE
         if (self.server and self.server.poll() is not None) or time.monotonic()-self.start_time>25:
@@ -221,6 +227,28 @@ class Quantru(Adw.Application):
         window.hide()
         return True
 
+    def window_visibility_changed(self,window,_param):
+        if self.tray:self.tray.set_window_visible(window.get_visible())
+
+    def refresh_tray_state(self):
+        if not self.tray:return
+        self.tray.set_window_visible(bool(self.window and self.window.get_visible()))
+        if self.stopping:
+            self.tray.set_server_state('stopping')
+        elif self.poll_source:
+            self.tray.set_server_state('starting')
+        elif self.server_paused:
+            self.tray.set_running(False)
+        else:
+            self.tray.set_running(web_available())
+
+    def tray_toggle_window(self):
+        if self.window and self.window.get_visible():
+            self.close_window(self.window)
+        else:
+            self.tray_open()
+        return False
+
     def tray_lost(self):
         if self.hidden_hold:self.tray_open()
 
@@ -232,7 +260,7 @@ class Quantru(Adw.Application):
         return False
 
     def tray_toggle_server(self):
-        if self.stopping:return False
+        if self.stopping or self.poll_source:return False
         if self.server_paused or (not web_available() and (self.server is None or self.server.poll() is not None)):
             self.start_backend()
             return False
@@ -243,6 +271,7 @@ class Quantru(Adw.Application):
             self.toast('Server started outside this window. Close it from its original terminal.')
             return False
         self.stopping=True
+        if self.tray:self.tray.set_server_state("stopping")
         self.server_paused=True
         self.view.stop_loading()
         self.server.terminate()
@@ -271,7 +300,7 @@ class Quantru(Adw.Application):
 
     def show_error(self,message):
         self.retry.set_label('Retry')
-        if self.tray:self.tray.set_running(False)
+        if self.tray:self.tray.set_running(web_available())
         self.waiting.set_title('Quantru unavailable')
         self.waiting.set_description(message)
         self.retry.set_visible(True)
@@ -280,6 +309,7 @@ class Quantru(Adw.Application):
     def load_changed(self,view,event):
         if event==WebKit.LoadEvent.STARTED:self.preview_keyboard=False
         if not self.server_paused and event==WebKit.LoadEvent.FINISHED and view.get_uri() and view.get_uri().startswith(URL):
+            if self.tray:self.tray.set_running(True)
             self.stack.set_visible_child_name('chat')
             print('Native Quantru loaded:',view.get_uri(),flush=True)
 
