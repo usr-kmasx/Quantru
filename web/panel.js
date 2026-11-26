@@ -9,6 +9,13 @@
     toggle.title = open ? 'Close side panel' : 'Open side panel';
   }
   toggle.addEventListener('click', () => setOpen(toggle.getAttribute('aria-expanded') !== 'true'));
+  // The full-height left edge, as wide as the logo inset, is a mouse shortcut.
+  // Keep touch, keyboard, modal dialogs and the existing click toggle intact.
+  document.addEventListener('pointermove', e => {
+    if(e.pointerType!=='mouse'||e.buttons!==0||toggle.getAttribute('aria-expanded')==='true'||document.querySelector('dialog[open]'))return;
+    const r=toggle.getBoundingClientRect();
+    if(e.clientX>=0&&e.clientX<r.left)setOpen(true);
+  },{passive:true});
   document.addEventListener('click', e => {
     if (toggle.getAttribute('aria-expanded') !== 'true' || document.querySelector('dialog[open]')) return;
     if (!panel.contains(e.target) && !toggle.contains(e.target)) setOpen(false);

@@ -156,25 +156,72 @@ function appendGeneratedImage(reply,chat,seq){
   const container=document.createElement('div');container.className='generated-result';
   container.append(image,download);reply.append(container);
 }
+// Each inference round owns its own thought block.
+function appendThoughtBlock(reply,before=null,active=false){
+  const details=document.createElement('details');details.className='thinking';details.open=active;
+  const summary=document.createElement('summary');summary.textContent=active?'Thinking…':'Thought process';
+  const trace=document.createElement('div');trace.className='thinking-text';
+  let text='',following=true,finished=!active;
+  const nearBottom=()=>trace.scrollHeight-trace.clientHeight-trace.scrollTop<=24;
+  trace.addEventListener('scroll',()=>{if(trace.clientHeight>0)following=nearBottom();},{passive:true});
+  trace.addEventListener('wheel',e=>{if(e.deltaY<0&&trace.scrollHeight>trace.clientHeight)following=false;},{passive:true});
+  function paint(final=false){
+    if(!details.open)return;
+    renderMarkdown(trace,text,final,()=>{if(following&&details.open)trace.scrollTop=trace.scrollHeight;scheduleFollow();});
+  }
+  details.addEventListener('toggle',()=>{if(details.open)paint(true);scheduleFollow();});
+  details.append(summary,trace);reply.insertBefore(details,before);
+  return {details,setText(value,final=false){if(value!==text||final){text=value;paint(final);}},
+    finish(collapse=true){if(!finished){finished=true;summary.textContent='Thought process';paint(true);if(collapse)details.open=false;}}};
+}
+function splitThoughts(text,boundaries){
+  const chars=Array.from(text||'');
+  let offset=0,after=0;
+  const parts=[];
+  for(const boundary of boundaries||[]){
+    if(!Number.isInteger(boundary.offset)||boundary.offset<offset||boundary.offset>chars.length||!Number.isInteger(boundary.after)||boundary.after<=after)continue;
+    if(boundary.offset>offset)parts.push({after,text:chars.slice(offset,boundary.offset).join('')});
+    offset=boundary.offset;after=boundary.after;
+  }
+  if(offset<chars.length)parts.push({after,text:chars.slice(offset).join('')});
+  return parts;
+}
+function syncThoughtBlocks(turn,record){
+  const runs=record.shell_runs||[];
+  const drafts=Object.values(record.shell_drafts||{});
+  for(const part of splitThoughts(record.thinking,record.thinking_boundaries)){
+    const next=runs.find(run=>run.idx>part.after);
+    const before=next?turn.remoteShells.get(next.idx)?.box:(drafts.length?turn.remoteShells.get(drafts[0].draft_id)?.box:turn.remoteOutput);
+    let block=turn.remoteThoughtBlocks.get(part.after);
+    if(!block){
+      block=appendThoughtBlock(turn.reply,before||null,false);
+      turn.remoteThoughtBlocks.set(part.after,block);
+    }else if(before&&block.details.nextSibling!==before){
+      turn.reply.insertBefore(block.details,before);
+    }
+    block.setText(part.text,record.status!=='pending'&&!record.version);
+  }
+}
 function appendShellRun(reply,record,before=null){
   const box=document.createElement('section');box.className='shell-run';
   const header=document.createElement('div');header.className='shell-run-header';
   const title=document.createElement('span');title.textContent='Terminal';
   const state=document.createElement('span');state.className='shell-run-status';
   const copy=document.createElement('button');copy.type='button';copy.textContent='Copy';copy.title='Copy terminal command';
-  copy.onclick=()=>copyToClipboard(record.command).catch(()=>{});
+  copy.onclick=()=>copyToClipboard(command.textContent).catch(()=>{});
   header.append(title,state,copy);
-  const cwd=document.createElement('div');cwd.className='shell-run-cwd';cwd.textContent=record.cwd;
+  const cwd=document.createElement('div');cwd.className='shell-run-cwd';cwd.textContent=record.cwd||'';cwd.hidden=!record.cwd;
   const command=document.createElement('pre');command.className='shell-run-command';command.textContent=record.command;
   const output=document.createElement('pre');output.className='shell-run-output';output.textContent=record.output||'';output.hidden=!output.textContent;
   box.append(header,cwd,command,output);reply.insertBefore(box,before);
-  const block={running:true,output,appendOutput(text){
+  const block={running:true,box,output,setCommand(text){command.textContent=text||'';},start(record){block.setCommand(record.command);cwd.textContent=record.cwd||'';cwd.hidden=!record.cwd;block.finish('running',null);},appendOutput(text){
     const follow=output.scrollHeight-output.clientHeight-output.scrollTop<=24;
     output.hidden=false;output.append(document.createTextNode(text));if(follow)output.scrollTop=output.scrollHeight;
   },finish(status,code){
-    block.running=status==='running';
+    block.running=status==='running'||status==='writing';
+    copy.disabled=status==='writing';
     box.dataset.status=status;
-    state.textContent=status==='running'?'Running…':status==='complete'?'Exit '+(code??0):status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':code==null?'Failed':'Exit '+code;
+    state.textContent=status==='writing'?'Writing command…':status==='running'?'Running…':status==='complete'?'Exit '+(code??0):status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':code==null?'Failed':'Exit '+code;
   }};
   block.finish(record.status||'running',record.exit_code);
   return block;
@@ -194,21 +241,18 @@ function restoreTurn(record){
   }
   turn.userActions=actionBar(turn,'user');
   const reply=bubble('assistant','');turn.reply=reply;
-  if(turn.thinking||turn.status==='pending'){
-    const details=document.createElement('details');details.className='thinking';
-    const summary=document.createElement('summary');summary.textContent='Thought process';
-    const trace=document.createElement('div');trace.className='thinking-text';
-    details.append(summary,trace);reply.append(details);
-    turn.remoteThoughts=details;turn.remoteTrace=trace;details.hidden=!turn.thinking;
-    details.addEventListener('toggle',()=>{if(details.open)renderMarkdown(trace,turn.thinking,true);});
-  }
+  turn.remoteThoughtBlocks=new Map();
   turn.remoteShells=new Map();
   for(const run of turn.shell_runs||[])turn.remoteShells.set(run.idx,appendShellRun(reply,run));
-  if(turn.generated_image)appendGeneratedImage(reply,chatId,turn.seq);
+  if(turn.generated_image){
+    const anchor=document.createElement('div');anchor.hidden=true;reply.append(anchor);turn.remoteOutput=anchor;
+    appendGeneratedImage(reply,chatId,turn.seq);
+  }
   else if(turn.answer||turn.status==='pending'){
     const output=document.createElement('div');reply.append(output);turn.remoteOutput=output;
     if(turn.answer)renderMarkdown(output,turn.answer,true);else output.textContent='…';
   }
+  syncThoughtBlocks(turn,turn);
   if(turn.status==='pending')reply.classList.add('streaming');
   if(turn.status!=='complete'&&turn.status!=='pending'){const note=document.createElement('div');note.className='generation-stopped';note.textContent=turn.status==='error'?'Generation failed':'Generation stopped';reply.append(note);}
   turn.replyActions=actionBar(turn,'assistant');
@@ -349,20 +393,30 @@ function showRemoteLive(live){
       renderMarkdown(turn.remoteOutput,live.generated_image?live.answer.replace(/\[Generated image: [^\]]*\]$/,''):live.answer,false,scheduleFollow);
     }else if(live.thinking&&!live.answer)turn.remoteOutput.textContent='';
   }
-  if(turn.remoteThoughts&&turn.thinking!==live.thinking){
-    turn.thinking=live.thinking;turn.remoteThoughts.hidden=!live.thinking;
-    if(turn.remoteThoughts.open)renderMarkdown(turn.remoteTrace,live.thinking,false,scheduleFollow);
+  turn.thinking=live.thinking;
+  for(const draft of Object.values(live.shell_drafts||{})){
+    let block=turn.remoteShells.get(draft.draft_id);
+    if(!block){
+      block=appendShellRun(turn.reply,draft,turn.remoteOutput||null);turn.remoteShells.set(draft.draft_id,block);
+    }else block.setCommand(draft.command);
   }
   for(const run of live.shell_runs||[]){
     let block=turn.remoteShells.get(run.idx);
+    const draft=turn.remoteShells.get(run.draft_id);
+    if(draft){
+      turn.remoteShells.delete(run.draft_id);
+      if(block)draft.box.remove();else{block=draft;block.start(run);turn.remoteShells.set(run.idx,block);}
+    }
     if(!block){
       block=appendShellRun(turn.reply,run,turn.remoteOutput||null);turn.remoteShells.set(run.idx,block);
-    }else if(block.output.textContent!==run.output){
+    }
+    if(block.output.textContent!==run.output){
       if(run.output.startsWith(block.output.textContent))block.appendOutput(run.output.slice(block.output.textContent.length));
       else{block.output.textContent=run.output;block.output.hidden=!run.output;}
     }
     block.finish(run.status,run.exit_code);
   }
+  syncThoughtBlocks(turn,live);
   if(live.generated_image)appendGeneratedImage(turn.reply,chatId,turn.seq);
   scheduleFollow();
 }

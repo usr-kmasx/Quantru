@@ -122,7 +122,7 @@ function renderReasoningMenu(){
     const label=document.createElement('span');label.textContent=reasoningLabel(level);
     item.append(label);
     if(!reasoningCaps.native.length&&reasoningBudgets[level]){const hint=document.createElement('small');hint.textContent=reasoningBudgets[level];item.append(hint);}
-    if(level===reasoningLevel){const check=document.createElement('span');check.className='reasoning-check';check.textContent='✓';item.append(check);}
+    const check=document.createElement('span');check.className='reasoning-check';check.textContent='✓';check.setAttribute('aria-hidden','true');item.append(check);
     item.onclick=()=>{setReasoning(level);reasoningToggle.focus();};
     reasoningMenu.append(item);
   }
@@ -354,20 +354,24 @@ function updateTokenStats(turn){
   const stats=turn.generation_stats;
   const running=turn.metricsRunning||turn.status==='pending';
   label.hidden=!stats;
-  if(!stats){label.textContent='';return;}
+  if(!stats){label.textContent='';label.title='';return;}
   // The first decode sample can have an unusually small elapsed time.
   // Wait for a useful sample without changing the measured cumulative rate.
   const now=performance.now();
   if(turn.firstMetricsAt==null)turn.firstMetricsAt=now;
   const enoughSamples=stats.tokens>=8&&Number(stats.decode_ms)>=3000&&now-turn.firstMetricsAt>=3000;
+  const hasContext=Number.isInteger(stats.context_used)&&stats.context_used>=0&&Number.isInteger(stats.context_limit)&&stats.context_limit>0;
+  const context=hasContext?' · '+Math.min(100,Math.floor(100*stats.context_used/stats.context_limit))+'% context':'';
+  label.title=hasContext?stats.context_used.toLocaleString('en-US')+' / '+stats.context_limit.toLocaleString('en-US')+' context tokens':'';
+
   if(running&&!enoughSamples){
-    label.textContent=stats.tokens.toLocaleString('en-US')+' tokens';
+    label.textContent=stats.tokens.toLocaleString('en-US')+' tokens'+context;
     return;
   }
   if(running&&turn.lastMetricsPaint!=null&&now-turn.lastMetricsPaint<1000)return;
   turn.lastMetricsPaint=now;
   const average=Number(stats.average).toFixed(2);
-  label.textContent=average+' tok/s · '+stats.tokens.toLocaleString('en-US')+' tokens';
+  label.textContent=average+' tok/s · '+stats.tokens.toLocaleString('en-US')+' tokens'+context;
 }
 function actionBar(turn, role) {
   const bar = document.createElement('div');
@@ -561,11 +565,7 @@ async function generate(turn, addUser) {
       img.setAttribute('role','button');
       img.onclick = () => openPreview(f);
       img.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(f); } };
-      img.onload = () => {
-        const scale = Math.min(1, 320 / img.naturalWidth, 280 / img.naturalHeight);
-        img.style.width = Math.round(img.naturalWidth * scale) + 'px';
-        URL.revokeObjectURL(url);
-      };
+      img.onload = () => URL.revokeObjectURL(url);
       img.onerror = () => URL.revokeObjectURL(url);
       userBubble.append(img);
     } else {
@@ -586,36 +586,11 @@ async function generate(turn, addUser) {
   let outcome = 'complete';
   let persisted = false;
   const shellBlocks=new Map();
-  const thoughts = document.createElement('details');
-  thoughts.className = 'thinking';
-  thoughts.open = true;
-  const summary = document.createElement('summary');
-  summary.textContent = 'Thinking…';
-  const trace = document.createElement('div');
-  trace.className = 'thinking-text';
-  let followThinking = true;
-  const nearThinkingBottom = () => trace.scrollHeight - trace.clientHeight - trace.scrollTop <= 24;
-  trace.addEventListener('scroll', () => {
-    if (trace.clientHeight > 0) followThinking = nearThinkingBottom();
-  }, {passive:true});
-  trace.addEventListener('wheel', e => {
-    if (e.deltaY < 0 && trace.scrollHeight > trace.clientHeight) followThinking = false;
-  }, {passive:true});
-  function renderThinking(final = false) {
-    if(!thoughts.open)return;
-    renderMarkdown(trace, thinking, final, () => {
-      if (followThinking && thoughts.open) trace.scrollTop = trace.scrollHeight;
-      scheduleFollow();
-    });
-  }
-  thoughts.addEventListener('toggle',()=>{
-    if(thoughts.open)renderThinking(true);
-    scheduleFollow();
-  });
-  thoughts.append(summary, trace);
-  const output = document.createElement('div');
-  reply.replaceChildren(thoughts, output);
-  thoughts.hidden = true;
+  let thoughtBlock=null;
+  let roundThinking='';
+  const output=document.createElement('div');
+  reply.replaceChildren(output);
+  function finishThought(collapse=true){thoughtBlock?.finish(collapse);}
   output.textContent = '…';
   turn.replyActions=actionBar(turn,'assistant');
   updateActions();
@@ -645,12 +620,28 @@ async function generate(turn, addUser) {
         if (data === '[DONE]') continue;
         const chunk = JSON.parse(data);
         if(chunk.generation_stats){turn.generation_stats=chunk.generation_stats;updateTokenStats(turn);}
+        if(chunk.shell_round){
+          finishThought();
+          thoughtBlock=null;
+          roundThinking='';
+        }
         if(chunk.shell_event){
           const event=chunk.shell_event;
-          if(event.type==='start'){
-            if(thinking){summary.textContent='Thought process';thoughts.open=false;}
+          if(event.type==='writing'){
+            finishThought();
             if(!answer)output.textContent='';
-            const block=appendShellRun(reply,event,output);
+            let block=shellBlocks.get(event.draft_id);
+            if(!block){
+              block=appendShellRun(reply,{...event,status:'writing'},output);
+              shellBlocks.set(event.draft_id,block);
+            }else block.setCommand(event.command);
+            status.textContent='Writing command…';
+          }else if(event.type==='start'){
+            finishThought();
+            if(!answer)output.textContent='';
+            let block=shellBlocks.get(event.draft_id);
+            if(block){shellBlocks.delete(event.draft_id);block.start(event);}
+            else block=appendShellRun(reply,event,output);
             shellBlocks.set(event.idx,block);
             status.textContent='Running terminal command…';
           }else{
@@ -662,7 +653,7 @@ async function generate(turn, addUser) {
         if(chunk.shell_error)throw new Error(chunk.shell_error);
         if(chunk.image_error)throw new Error(chunk.image_error);
         if(chunk.image_tool_call){
-          if(thinking){summary.textContent='Thought process';thoughts.open=false;}
+          finishThought();
         }
         if(chunk.image_status){
           status.textContent=chunk.image_status;
@@ -678,33 +669,27 @@ async function generate(turn, addUser) {
         const delta = chunk.choices?.[0]?.delta;
         if (delta?.reasoning_content) {
           thinking += delta.reasoning_content;
-          thoughts.hidden = false;
-          renderThinking();
+          roundThinking += delta.reasoning_content;
+          if(!thoughtBlock)thoughtBlock=appendThoughtBlock(reply,output,true);
+          thoughtBlock.setText(roundThinking);
           if(!answer)output.textContent = '';
         }
         if (delta?.content) {
-          if (!answer && thinking) {
-            summary.textContent = 'Thought process';
-            thoughts.open = false;
-          }
+          finishThought();
           answer += delta.content;
           renderMarkdown(output, answer, false, scheduleFollow);
         }
         scheduleFollow();
       }
     }
-    if (thinking) { summary.textContent = 'Thought process'; renderThinking(true); }
+    finishThought(false);
     if(!turn.generated_image)renderMarkdown(output, answer, true);
     turn.answer = answer;
   } catch (error) {
     if (request.signal.aborted) {
       outcome='stopped';
       for(const block of shellBlocks.values())if(block.running)block.finish('stopped',null);
-      if (thinking) {
-        summary.textContent = 'Thought process';
-        renderThinking(true);
-        thoughts.open = false;
-      }
+      finishThought();
       if(!turn.generated_image)renderMarkdown(output, answer, true);
       const note = document.createElement('div');
       note.className = 'generation-stopped';
@@ -713,6 +698,7 @@ async function generate(turn, addUser) {
       turn.answer = answer;
     } else {
       outcome='error';
+      finishThought();
       if(shellBlocks.size){
         for(const block of shellBlocks.values())if(block.running)block.finish('error',null);
         const note=document.createElement('div');note.className='generation-stopped';note.textContent=error.message;reply.append(note);

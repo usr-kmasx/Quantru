@@ -383,11 +383,11 @@ class Handler(SimpleHTTPRequestHandler):
                     messages.insert(0,{'role':'system','content':image_generation.UNAVAILABLE_INSTRUCTION+'\n'+shell_tool.OFF})
             data = json.dumps(payload).encode()
             req = urllib.request.Request(f'http://127.0.0.1:{engine.PORT}/v1/chat/completions', data=data, headers={'Content-Type':'application/json'})
+            stats=token_stats.TokenStats.for_engine(engine.PORT) if payload.get('stream') else token_stats.TokenStats()
             with urllib.request.urlopen(req, timeout=300) as response:
                 self.send_response(response.status)
                 self.send_header('Content-Type', response.headers.get('Content-Type','application/json'))
                 self.end_headers()
-                stats=token_stats.TokenStats()
                 for line in response:
                     if payload.get('stream') and line.startswith(b'data:'):
                         try:
@@ -445,7 +445,7 @@ class Handler(SimpleHTTPRequestHandler):
         else:messages.insert(0,{'role':'system','content':instruction})
         base=messages[:]
         rounds=[]
-        stats=token_stats.TokenStats()
+        stats=token_stats.TokenStats.for_engine(engine.PORT)
         idx=0
         tools=[shell_tool.TOOL]
         counter=context_memory.Engine(engine.PORT,payload.get('chat_template_kwargs'))
@@ -463,6 +463,7 @@ class Handler(SimpleHTTPRequestHandler):
                 plan={**payload,'messages':base+[m for group in rounds for m in group],
                       'tools':tools,'tool_choice':'auto','stream':True}
                 stats.next_round()
+                if idx:send_event(shell_round={'after':idx})
                 calls={}
                 finish=None
                 text=''
@@ -487,10 +488,15 @@ class Handler(SimpleHTTPRequestHandler):
                         thought+=delta.get('reasoning_content') or ''
                         if visible:send_event(visible)
                         for call in delta.get('tool_calls') or []:
-                            fn=calls.setdefault(call.get('index',0),{'id':'','name':'','arguments':''})
+                            fn=calls.setdefault(call.get('index',0),{'id':'','name':'','arguments':'','draft_id':uuid.uuid4().hex,'preview':None})
                             if call.get('id'):fn['id']+=call['id']
                             for k,v in (call.get('function') or {}).items():
                                 if k in ('name','arguments') and isinstance(v,str):fn[k]+=v
+                            if fn['name']=='run_shell':
+                                preview=shell_tool.command_preview(fn['arguments'])
+                                if preview is not None and preview!=fn['preview']:
+                                    fn['preview']=preview
+                                    send_event(shell_event={'type':'writing','draft_id':fn['draft_id'],'command':preview})
                         finish=choice.get('finish_reason') or finish
                 if not calls:break
                 if finish!='tool_calls':raise RuntimeError('Incomplete shell tool call.')
@@ -509,7 +515,7 @@ class Handler(SimpleHTTPRequestHandler):
                     chat,seq=archive['chat'],archive['seq']
                     chat_history.start_shell(chat,seq,idx,command,cwd)
                     try:
-                        send_event(shell_event={'type':'start','idx':idx,'command':command,'cwd':cwd})
+                        send_event(shell_event={'type':'start','idx':idx,'draft_id':fn['draft_id'],'command':command,'cwd':cwd})
                     except (InterruptedError,BrokenPipeError,ConnectionResetError):
                         chat_history.finish_shell(chat,seq,idx,'',None,'stopped')
                         raise
@@ -565,7 +571,7 @@ class Handler(SimpleHTTPRequestHandler):
             calls={}
             finish=None
             visible_text=''
-            stats=token_stats.TokenStats()
+            stats=token_stats.TokenStats.for_engine(engine.PORT)
             req=urllib.request.Request(f'http://127.0.0.1:{engine.PORT}/v1/chat/completions',
                 data=json.dumps(plan).encode(),headers={'Content-Type':'application/json'})
             with urllib.request.urlopen(req,timeout=300) as response:

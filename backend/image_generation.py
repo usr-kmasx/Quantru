@@ -156,11 +156,13 @@ class GenerationProgress:
     def feed(self,data,now=None):
         now=time.monotonic() if now is None else now
         self.buffer+=data
-        lines=re.split(r'[\r\n]+',self.buffer)
+        # Upstream flushes each console progress update with ESC[K, but
+        # intermediate steps have no trailing newline until the next update.
+        lines=re.split(r'(?:[\r\n]|\x1b\[K)+',self.buffer)
         self.buffer=lines.pop()
         for line in lines:
             lower=line.lower()
-            if 'generating image:' in lower or 'sampling using' in lower:
+            if 'generating image:' in lower or 'sampling using' in lower or 'sampling started:' in lower:
                 self.phase='Generating image'
                 self.step=self.total=0
                 self.samples=[]

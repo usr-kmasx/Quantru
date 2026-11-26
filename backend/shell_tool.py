@@ -1,5 +1,6 @@
 """Explicit, per-request shell access as the local user. No sandbox or command filter."""
 import codecs
+import json
 import os
 import pathlib
 import re
@@ -64,6 +65,54 @@ def stop_all():
         for s in sessions.values():
             s.stop()
             with s.lock:signal_group(s.process,signal.SIGKILL)
+
+def command_preview(raw):
+    """Decode the available prefix of a top-level JSON command string."""
+    decoder=json.JSONDecoder()
+    i=0
+    def space():
+        nonlocal i
+        while i<len(raw) and raw[i] in ' \t\r\n':i+=1
+    space()
+    if i>=len(raw) or raw[i]!='{':return None
+    i+=1
+    while True:
+        space()
+        try:key,i=decoder.raw_decode(raw,i)
+        except ValueError:return None
+        if not isinstance(key,str):return None
+        space()
+        if i>=len(raw) or raw[i]!=':':return None
+        i+=1
+        space()
+        if key=='command':
+            if i>=len(raw) or raw[i]!='"':return None
+            try:value,_=decoder.raw_decode(raw,i)
+            except ValueError:
+                start=i
+                i+=1
+                end=i
+                while i<len(raw):
+                    if raw[i]=='"':break
+                    if raw[i]=='\\':
+                        if i+1>=len(raw):break
+                        size=6 if raw[i+1]=='u' else 2
+                        if i+size>len(raw):break
+                        if size==6 and not re.fullmatch(r'[0-9a-fA-F]{4}',raw[i+2:i+6]):break
+                        if size==2 and raw[i+1] not in '"\\/bfnrt':break
+                        i+=size
+                    elif ord(raw[i])<32:break
+                    else:i+=1
+                    end=i
+                try:value=json.loads(raw[start:end]+'"')
+                except ValueError:return None
+            # A Unicode escape may arrive before its matching low surrogate.
+            return value.encode('utf-16-le','surrogatepass').decode('utf-16-le','ignore')
+        try:_,i=decoder.raw_decode(raw,i)
+        except ValueError:return None
+        space()
+        if i>=len(raw) or raw[i]!=',':return None
+        i+=1
 
 def arguments(args):
     command=args.get('command')

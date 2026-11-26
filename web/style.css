@@ -24,7 +24,7 @@ textarea::placeholder{color:#a1a1a1}
 .messages{width:min(100%,768px);display:flex;flex-direction:column;gap:24px;min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .messages:empty{display:none}
 .message{max-width:100%;padding:8px 16px}
-.message.user{align-self:flex-end;background:#363636;border-radius:20px;max-width:85%}
+.message.user{align-self:flex-end;display:flex;flex-direction:column;align-items:flex-end;gap:8px;background:transparent;padding:0;max-width:85%}
 .message.assistant{align-self:flex-start}
 main:has(.message){height:100dvh;justify-content:flex-end}
 main:has(.message) .messages{flex:1;padding-top:24px;padding-bottom:20px}
@@ -79,7 +79,8 @@ main:has(.message) .composer,main:has(.message) .attachments{width:min(calc(100%
 
 /* Keep the outgoing bubble sized to its actual content, including media. */
 .messages .message.user{width:max-content;max-width:min(85%,652px);box-sizing:border-box;overflow-wrap:anywhere}
-.message.user .message-image{width:320px;max-width:100%;height:auto;max-height:280px;object-fit:contain}
+.message.user .message-image{width:auto;max-width:min(100%,320px);height:auto;max-height:280px;object-fit:contain;margin:0;border-radius:12px}
+.message.user .message-file{max-width:100%;margin:0;padding:8px 12px;background:#363636;border-radius:12px}
 
 /* Consistent minimal scrollbars throughout Quantru. */
 :root{color-scheme:dark;scrollbar-width:thin;scrollbar-color:#4b4b4b transparent}
@@ -162,9 +163,9 @@ main:has(.message) .composer,main:has(.message) .attachments{width:min(calc(100%
 .edit-banner button:hover{background:#464646}
 
 /* Edit directly in the outgoing message. */
-.messages .message.user.editing{width:min(100%,652px);max-width:100%;padding:12px 16px}
+.messages .message.user.editing{width:min(100%,652px);max-width:100%;padding:0}
 .user-text[hidden],.message-actions[hidden]{display:none}
-.inline-editor{display:flex;flex-direction:column;gap:10px;min-width:0}
+.inline-editor{display:flex;flex-direction:column;gap:10px;min-width:0;width:100%;padding:12px 16px;background:#363636;border-radius:20px}
 .inline-edit-field{width:100%;min-height:32px;max-height:240px;resize:none;white-space:pre-wrap;font:inherit;color:inherit;background:transparent;border:0;outline:none;padding:2px 0}
 .inline-edit-actions{display:flex;justify-content:flex-end;gap:8px}
 .inline-edit-actions button{border:0;border-radius:18px;background:#494949;color:#eee;padding:7px 15px;font:13px system-ui;cursor:pointer}
@@ -340,7 +341,9 @@ html,body,.chat-open,.chat-rename input {
 .reasoning-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:7px;background:none;color:#eee;text-align:left;font:13px system-ui;cursor:pointer;white-space:nowrap}
 .reasoning-menu button:hover,.reasoning-menu button:focus-visible{background:#424242}
 .reasoning-menu small{margin-left:auto;color:#aaa;font-size:11px}
-.reasoning-check{margin-left:auto;color:#a9c7f5}
+.reasoning-check{flex:0 0 14px;width:14px;text-align:center;color:#a9c7f5;visibility:hidden}
+.reasoning-menu button:not(:has(small)) .reasoning-check{margin-left:auto}
+.reasoning-menu button[aria-checked="true"] .reasoning-check{visibility:visible}
 
 /* Use the document viewport as the only conversation scroller. A nested
    full-height scrolling flex layer can become stale in embedded Chromium.
@@ -373,7 +376,8 @@ main:has(.message) .welcome-title{display:none}
 .lora-add:hover,.lora-remove:hover{background:#494949}
 .lora-add:disabled,.lora-remove:disabled{opacity:.45;cursor:default}
 
-.message.user .user-text{text-align:right}
+.message.user .user-text{width:fit-content;max-width:100%;min-width:0;padding:8px 16px;background:#363636;border-radius:20px;text-align:left;overflow-wrap:anywhere}
+.message.user .user-text:empty{display:none}
 
 /* Stable-diffusion resolution presets */
 .resolution-presets{align-items:stretch;flex-direction:column;gap:10px}
@@ -388,13 +392,14 @@ main:has(.message) .welcome-title{display:none}
 .shell-run{width:min(100%,768px);min-width:0;overflow:hidden;border:1px solid #454545;border-radius:12px;margin:8px 0 12px;background:#292929;font-size:13px}
 .shell-run-header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#333;color:#ddd}
 .shell-run-status{margin-left:auto;font-size:12px;color:#aaa}
-.shell-run[data-status="running"] .shell-run-status{color:#edc9a8}
+.shell-run[data-status="running"] .shell-run-status,.shell-run[data-status="writing"] .shell-run-status{color:#edc9a8}
 .shell-run-header button{color:#ddd;background:none;border:0;font:inherit;padding:2px 4px;cursor:pointer}
 .shell-run-header button:hover{color:#fff}
+.shell-run-header button:disabled{opacity:.4;cursor:default}
 .shell-run-cwd{font:11px monospace;color:#aaa;padding:8px 12px 0;overflow-wrap:anywhere}
 .shell-run-command,.shell-run-output{font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:8px 12px;max-width:100%;user-select:text}
 .shell-run-output{border-top:1px solid #454545;max-height:320px;overflow:auto;overscroll-behavior:contain;color:#c9c9c9}
-.shell-run-output[hidden]{display:none}
+.shell-run-output[hidden],.shell-run-cwd[hidden]{display:none}
 
 .quantru-panel>#mobile-pair-open{margin-top:auto;flex-shrink:0;width:40px;display:grid;place-items:center;padding:8px;min-height:38px}
 .quantru-panel>#llama-settings-open{margin-top:0}

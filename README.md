@@ -12,9 +12,9 @@ Quantru combines local language models, image generation, voice transcription, d
 - Image generation and reference images through stable-diffusion.cpp, with configurable models, LoRAs, samplers, and resolutions.
 - Local voice isolation and speech-to-text through audio.cpp and Parakeet.
 - Persistent conversations, document attachments, Markdown, syntax highlighting, math rendering, and isolated HTML previews.
-- Streaming responses with a subtle token fade, live token count, and average decoding speed.
+- Streaming responses with a subtle token fade, live token count, average decoding speed, and context occupancy.
 - Native GTK4/libadwaita window, model file picker, keyboard navigation, and system tray.
-- Optional phone pairing over a trusted local network, synchronized conversations, and explicit shell-tool access.
+- Optional phone pairing over a trusted local network, synchronized conversations, and explicit shell-tool access with streamed command previews and terminal output.
 - On-demand model loading and independent engine updates.
 
 ## Installation

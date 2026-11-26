@@ -23,7 +23,7 @@ The local server listens on loopback port 8765. The internal llama.cpp server us
 
 The default installation is under `${XDG_DATA_HOME:-$HOME/.local/share}/quantru/app`. The backend directory contains local settings, a SQLite archive, downloaded engines, voice models, and pairing state. WebKit session data and caches use the corresponding XDG data/cache directories. User-selected chat and image weights remain in their original locations.
 
-SQLite uses foreign keys, transactional archive mutations, FTS5 retrieval, and content-addressed attachment deduplication. Live synchronization state is transient. Voice processing uses temporary shared-memory storage; no separate persistent recording history is required for transcription.
+SQLite uses foreign keys, transactional archive mutations, FTS5 retrieval, and content-addressed attachment deduplication. Live synchronization state, including unfinished shell command previews, is transient. Completed responses retain inference statistics and reasoning-round boundaries alongside the existing shell transcripts. Voice processing uses temporary shared-memory storage; no separate persistent recording history is required for transcription.
 
 Keep the installation directory private. Back up the archive and settings only while the server is stopped, and protect the backup as you would your conversations. Deleting a chat removes associated records and unreferenced attachment blobs; it is not a guarantee of forensic erasure.
 
