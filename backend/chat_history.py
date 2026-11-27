@@ -41,6 +41,11 @@ def init():
           command TEXT NOT NULL,cwd TEXT NOT NULL,output TEXT NOT NULL DEFAULT '',
           exit_code INTEGER,status TEXT NOT NULL DEFAULT 'running',
           PRIMARY KEY(chat,seq,idx),FOREIGN KEY(chat,seq) REFERENCES turns(chat,seq) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS gallery_items(
+          chat TEXT NOT NULL,seq INTEGER NOT NULL,idx INTEGER NOT NULL,position INTEGER NOT NULL,
+          path TEXT NOT NULL,digest TEXT,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(chat,seq,idx,position),
+          FOREIGN KEY(chat,seq,idx) REFERENCES shell_runs(chat,seq,idx) ON DELETE CASCADE);
         UPDATE shell_runs SET status='interrupted' WHERE status='running';
         """)
         if 'generation_id' not in {r[1] for r in db.execute('PRAGMA table_info(turns)')}:
@@ -54,6 +59,7 @@ def init():
         columns={r[1] for r in db.execute('PRAGMA table_info(shell_runs)')}
         if 'kind' not in columns:db.execute("ALTER TABLE shell_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'shell'")
         if 'image_digest' not in columns:db.execute('ALTER TABLE shell_runs ADD COLUMN image_digest TEXT')
+        if 'gallery_total' not in columns:db.execute('ALTER TABLE shell_runs ADD COLUMN gallery_total INTEGER')
         db.execute("UPDATE turns SET status='stopped' WHERE status='pending'")
         from . import context_memory
         context_memory.init(db)
@@ -93,7 +99,10 @@ def page(chat,before=None):
         for turn in turns:
             turn['thinking_boundaries']=json.loads(turn['thinking_boundaries']) if turn['thinking_boundaries'] else []
             turn['timeline']=json.loads(turn['timeline']) if turn['timeline'] is not None else None
-            turn['shell_runs']=[dict(r) for r in db.execute('SELECT idx,command,cwd,output,exit_code,status,kind FROM shell_runs WHERE chat=? AND seq=? ORDER BY idx',(chat,turn['seq']))]
+            turn['shell_runs']=[dict(r) for r in db.execute('SELECT idx,command,cwd,output,exit_code,status,kind,gallery_total FROM shell_runs WHERE chat=? AND seq=? ORDER BY idx',(chat,turn['seq']))]
+            for run in turn['shell_runs']:
+                if run['kind']=='view_all_images':
+                    run['gallery_items']=[dict(r) for r in db.execute('SELECT position,path,status,error FROM gallery_items WHERE chat=? AND seq=? AND idx=? ORDER BY position',(chat,turn['seq'],run['idx']))]
     return {'turns':turns,'more':len(rows)>PAGE,'revision':revision[0]}
 
 def content(chat,seq):
@@ -259,3 +268,59 @@ def viewed_image_reference(chat,seq,idx):
     with connect() as db:
         row=db.execute("SELECT command,image_digest FROM shell_runs WHERE chat=? AND seq=? AND idx=? AND kind='view_image' AND status='complete' AND image_digest IS NOT NULL",(ident(chat),seqnum(seq),seqnum(idx))).fetchone()
         return tuple(row) if row else None
+
+
+def set_gallery_total(chat,seq,idx,total):
+    with connect() as db:
+        db.execute("UPDATE shell_runs SET gallery_total=? WHERE chat=? AND seq=? AND idx=? AND kind='view_all_images'",(total,ident(chat),seqnum(seq),idx))
+
+def store_gallery_items(chat,seq,idx,items):
+    with connect() as db:
+        db.executemany('INSERT INTO gallery_items(chat,seq,idx,position,path,digest,status,error) VALUES(?,?,?,?,?,?,?,?)',
+                       [(ident(chat),seqnum(seq),idx,i['position'],i['path'],i.get('digest'),i['status'],i.get('error','')) for i in items])
+
+def gallery_image_reference(chat,seq,idx,position):
+    with connect() as db:
+        row=db.execute("SELECT path,digest FROM gallery_items WHERE chat=? AND seq=? AND idx=? AND position=? AND status='viewed' AND digest IS NOT NULL",(ident(chat),seqnum(seq),seqnum(idx),seqnum(position))).fetchone()
+        return tuple(row) if row else None
+
+def append_gallery_notes(chat,seq,idx,notes):
+    with connect() as db:
+        db.execute("UPDATE shell_runs SET output=output||? WHERE chat=? AND seq=? AND idx=? AND kind='view_all_images'",(notes,ident(chat),seqnum(seq),idx))
+
+def finish_gallery(chat,seq,idx,status):
+    with connect() as db:
+        db.execute("UPDATE shell_runs SET status=? WHERE chat=? AND seq=? AND idx=? AND kind='view_all_images'",(status,ident(chat),seqnum(seq),idx))
+
+def read_gallery_results(chat,args):
+    """Resolve saved gallery positions without consulting the filesystem or model."""
+    chat=ident(chat)
+    if not isinstance(args,dict):raise ValueError('Invalid gallery lookup.')
+    seq=args.get('seq');idx=args.get('idx')
+    if (seq is None)!=(idx is None):raise ValueError('Provide both seq and idx, or omit both for the latest gallery.')
+    start=seqnum(args.get('start',1))
+    limit=args.get('limit',10)
+    if type(limit) is not int or not 1<=limit<=10:raise ValueError('Limit must be 1 to 10.')
+    positions=args.get('positions')
+    if positions is not None:
+        if not isinstance(positions,list) or not 1<=len(positions)<=10:raise ValueError('Provide 1 to 10 image numbers.')
+        positions=sorted(set(seqnum(i) for i in positions))
+    with connect() as db:
+        if seq is None:
+            run=db.execute("SELECT seq,idx,command,status,gallery_total FROM shell_runs WHERE chat=? AND kind='view_all_images' ORDER BY seq DESC,idx DESC LIMIT 1",(chat,)).fetchone()
+        else:
+            run=db.execute("SELECT seq,idx,command,status,gallery_total FROM shell_runs WHERE chat=? AND seq=? AND idx=? AND kind='view_all_images'",(chat,seqnum(seq),seqnum(idx))).fetchone()
+        if run is None:raise ValueError('No matching image gallery in this conversation.')
+        key=(chat,run['seq'],run['idx'])
+        fields='SELECT position AS image_number,path AS absolute_path,status,error FROM gallery_items WHERE chat=? AND seq=? AND idx=?'
+        if positions is not None:
+            rows=db.execute(fields+' AND position IN ('+','.join('?' for _ in positions)+') ORDER BY position',(*key,*positions)).fetchall()
+            missing=sorted(set(positions)-{r['image_number'] for r in rows})
+            next_start=None
+        else:
+            rows=db.execute(fields+' AND position>=? ORDER BY position LIMIT ?',(*key,start,limit+1)).fetchall()
+            next_start=rows[limit]['image_number'] if len(rows)>limit else None
+            rows=rows[:limit];missing=[]
+        return {'status':'success','gallery':{'seq':run['seq'],'idx':run['idx'],'directory':run['command'],'status':run['status'],'total':run['gallery_total']},
+                'items':[dict(r) for r in rows],'missing_positions':missing,'next_start':next_start,
+                'note':'Exact historical paths, not classifications. Files may have changed since inspection. Never guess paths for missing positions.'}

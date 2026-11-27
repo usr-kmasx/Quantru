@@ -13,8 +13,11 @@
     return body;
   };
   function setState(next,message=''){
+    const wasActive=state!=='idle';
     state=next;
     document.body.classList.toggle('voice-active',next!=='idle');
+    if(next==='idle'&&wasActive)refreshHealthAfterVoice();
+    else renderIdleStatus();
     if(typeof update==='function')update();
     mic.classList.toggle('recording',next==='recording');
     mic.innerHTML=next==='recording'?'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg>':originalIcon;

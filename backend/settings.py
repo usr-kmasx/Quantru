@@ -30,7 +30,7 @@ SPEC_METHODS = ('none','draft-mtp','draft-simple','draft-eagle3','draft-dflash',
 CHOICES = {'spec_method':SPEC_METHODS,'gpu_mode':('vram-first','auto'),'flash_attention':('on','auto','off'),
            'cache_k':('f16','q8_0','q4_0','q4_1','q5_0','q5_1'),
            'cache_v':('f16','q8_0','q4_0','q4_1','q5_0','q5_1')}
-def validate(data):
+def validate(data,check_files=True):
     if not isinstance(data,dict) or set(data) - set(DEFAULTS):
         raise ValueError('Unknown setting')
     result = {**DEFAULTS, **data}
@@ -49,7 +49,7 @@ def validate(data):
             if value == '': continue
             if not isinstance(value,str): raise ValueError(f'Invalid {key}')
             path=pathlib.Path(value).expanduser().resolve()
-            if not pathlib.Path(value).expanduser().is_absolute() or path.suffix.lower() != '.gguf' or not path.is_file():
+            if not pathlib.Path(value).expanduser().is_absolute() or path.suffix.lower() != '.gguf' or (check_files and not path.is_file()):
                 raise ValueError(f'{key}: choose an existing local GGUF')
             result[key]=str(path)
     method = result['spec_method']
@@ -66,7 +66,13 @@ def validate(data):
     return result
 def load():
     if not FILE.exists(): return validate(DEFAULTS)
-    return validate(json.loads(FILE.read_text()))
+    # A moved or temporarily unavailable model must not prevent the UI from opening.
+    # Saving settings and starting inference still require real, existing files.
+    return validate(json.loads(FILE.read_text()),check_files=False)
+def missing_paths(data):
+    return [key for key in ('model','mmproj','draft_model')
+            if data.get(key) and not pathlib.Path(data[key]).is_file()]
+
 def save(data):
     data=validate(data)
     with tempfile.NamedTemporaryFile(mode='w',dir=ROOT,delete=False) as f:

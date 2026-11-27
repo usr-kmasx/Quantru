@@ -70,11 +70,13 @@ def event(chat,chunk):
                 entry['shell_drafts'].pop(id,None)
                 entry['shell_runs'].append({'idx':e['idx'],'draft_id':id,'command':e['command'],'cwd':e['cwd'],'kind':e.get('kind','shell'),'output':'','status':'running','exit_code':None})
                 step(entry,'tool',idx=e['idx']);changed=True
-                entry['status']='Viewing image…' if e.get('kind')=='view_image' else 'Running terminal command…'
+                entry['status']={'view_image':'Viewing image…','view_all_images':'Viewing images…','gallery_results':'Reading gallery results…'}.get(e.get('kind'),'Running terminal command…')
             else:
                 run=next((r for r in entry['shell_runs'] if r['idx']==e['idx']),None)
                 if run:
-                    if e['type']=='output':run['output']+=e.get('text','')
+                    if e['type']=='gallery_total':run['gallery_total']=e['total'];run['gallery_items']=[]
+                    elif e['type']=='gallery_items':run.setdefault('gallery_items',[]).extend(e['items'])
+                    elif e['type']=='output':run['output']+=e.get('text','')
                     elif e['type']=='end':run.update(status=e['status'],exit_code=e['exit_code']);entry['status']=''
         if changed:chunk['timeline']=copy.deepcopy(entry['timeline'])
         entry['version']+=1

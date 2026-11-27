@@ -3,10 +3,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import hashlib, os, http.client
 import json, urllib.request, urllib.error, threading, signal, time
-from backend import engine, settings, voice_capture, chat_history, context_memory, image_generation, image_settings, reasoning, shell_tool, mobile_access, chat_sync, engine_updates, token_stats
+from backend import engine, settings, voice_capture, chat_history, context_memory, image_generation, image_settings, reasoning, shell_tool, mobile_access, chat_sync, engine_updates, token_stats, gallery
 from urllib.parse import urlparse, parse_qs
 
 ROOT = Path(__file__).resolve().parent / 'web'
+preview_slots=threading.BoundedSemaphore(3)
 HOST, PORT = '127.0.0.1', 8765
 config = settings.load()
 state_lock = threading.RLock()
@@ -293,6 +294,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.json_response(409, {'error':{'message':'Choose a chat model in llama.cpp settings first.'}})
             wake = sleeping or process is None or process.poll() is not None
             if wake:
+                missing=settings.missing_paths(config)
+                if missing:
+                    return self.json_response(409, {'error':{'message':'Model files unavailable. Update their paths in llama.cpp settings.'}})
                 loading = True
             active_requests += 1
             current_config = dict(config)
@@ -476,7 +480,7 @@ class Handler(SimpleHTTPRequestHandler):
         messages=[dict(m) for m in payload['messages']]
         counter=context_memory.Engine(engine.PORT,payload.get('chat_template_kwargs'))
         vision=counter.has_vision()
-        instruction=shell_tool.INSTRUCTION+'\n'+image_generation.UNAVAILABLE_INSTRUCTION+'\n'+(shell_tool.VIEW_INSTRUCTION if vision else shell_tool.NO_VISION_INSTRUCTION)
+        instruction=shell_tool.INSTRUCTION+'\n'+shell_tool.GALLERY_RESULTS_INSTRUCTION+'\n'+image_generation.UNAVAILABLE_INSTRUCTION+'\n'+(shell_tool.VIEW_INSTRUCTION if vision else shell_tool.NO_VISION_INSTRUCTION)
         if messages and messages[0]['role']=='system':
             messages[0]['content']=instruction+'\n\n'+messages[0]['content']
         else:messages.insert(0,{'role':'system','content':instruction})
@@ -487,7 +491,7 @@ class Handler(SimpleHTTPRequestHandler):
         last_boundary=0
         pending_views={}
         chat,seq=archive['chat'],archive['seq']
-        tools=[shell_tool.TOOL]+([shell_tool.VIEW_TOOL] if vision else [])
+        tools=[shell_tool.TOOL,shell_tool.GALLERY_RESULTS_TOOL]+([shell_tool.VIEW_TOOL,shell_tool.GALLERY_TOOL] if vision else [])
         budget=current_config['context']-min(512,max(128,current_config['context']//4))
         try:
             while True:
@@ -568,11 +572,105 @@ class Handler(SimpleHTTPRequestHandler):
                 viewed=0
                 for key in sorted(calls):
                     fn=calls[key]
-                    if fn['name'] not in ('run_shell','view_image'):raise ValueError('Unexpected shell tool.')
+                    if fn['name'] not in ('run_shell','view_image','view_all_images','read_gallery_results'):raise ValueError('Unexpected shell tool.')
                     id=fn['id'] or uuid.uuid4().hex[:12]
                     assistant['tool_calls'].append({'id':id,'type':'function','function':{'name':fn['name'],'arguments':fn['arguments']}})
                     session.check()
                     args=json.loads(fn['arguments'])
+                    if fn['name']=='read_gallery_results':
+                        idx+=1
+                        command=json.dumps(args,ensure_ascii=True)
+                        chat_history.start_shell(chat,seq,idx,command,'',kind='gallery_results')
+                        state='error';output='';result={'status':'error','error':'Gallery lookup failed.'}
+                        try:
+                            send_event(shell_event={'type':'start','idx':idx,'kind':'gallery_results','command':command,'cwd':''})
+                            result=chat_history.read_gallery_results(chat,args)
+                            state='complete'
+                        except (InterruptedError,BrokenPipeError,ConnectionResetError):
+                            state='stopped';raise
+                        except (ValueError,OSError) as e:result={'status':'error','error':str(e)}
+                        finally:
+                            if state!='stopped':output=json.dumps(result,ensure_ascii=True,indent=2)
+                            chat_history.finish_shell(chat,seq,idx,output,None,state)
+                        send_event(shell_event={'type':'output','idx':idx,'text':output})
+                        send_event(shell_event={'type':'end','idx':idx,'status':state,'exit_code':None})
+                        group.append({'role':'tool','tool_call_id':id,'content':json.dumps(result,ensure_ascii=True)})
+                        continue
+                    if fn['name']=='view_all_images':
+                        idx+=1
+                        path=args.get('path','') if isinstance(args,dict) else ''
+                        path=path if isinstance(path,str) else ''
+                        if path and os.path.isabs(path) and '\0' not in path:path=os.path.abspath(path)
+                        chat_history.start_shell(chat,seq,idx,path,'',kind='view_all_images')
+                        state='error'
+                        def notify_gallery(total=None,items=None,notes=None):
+                            session.check()
+                            try:
+                                if total is not None:
+                                    chat_history.set_gallery_total(chat,seq,idx,total)
+                                    send_event(shell_event={'type':'gallery_total','idx':idx,'total':total})
+                                if items:
+                                    chat_history.store_gallery_items(chat,seq,idx,items)
+                                    public=[{k:v for k,v in item.items() if k!='digest'} for item in items]
+                                    send_event(shell_event={'type':'gallery_items','idx':idx,'items':public})
+                                if notes:
+                                    notes=notes+'\n\n'
+                                    chat_history.append_gallery_notes(chat,seq,idx,notes)
+                                    send_event(shell_event={'type':'output','idx':idx,'text':notes})
+                            except (BrokenPipeError,ConnectionResetError):
+                                session.stop();raise InterruptedError('Gallery stopped.')
+                        def infer_gallery(messages,limit):
+                            session.check()
+                            stats.next_round()
+                            internal={**payload,'messages':messages,'stream':True,'max_tokens':limit,
+                                      'chat_template_kwargs':{**(payload.get('chat_template_kwargs') or {}),'enable_thinking':False}}
+                            internal.pop('tools',None);internal.pop('tool_choice',None)
+                            # The worker cannot call any tools. Its visible output is
+                            # tool evidence, not a second assistant speech bubble.
+                            request=urllib.request.Request(f'http://127.0.0.1:{engine.PORT}/v1/chat/completions',
+                                data=json.dumps(internal,ensure_ascii=True).encode(),headers={'Content-Type':'application/json'})
+                            done=False;finish_reason=None;parts=[]
+                            with urllib.request.urlopen(request,timeout=300) as response:
+                                for line in read_model_stream(response):
+                                    session.check()
+                                    if not line.startswith(b'data:'):continue
+                                    raw=line[5:].strip()
+                                    if raw==b'[DONE]':done=True;break
+                                    chunk=json.loads(raw)
+                                    if chunk.get('error'):raise RuntimeError(str(chunk['error']))
+                                    metrics=stats.update(chunk)
+                                    if metrics:
+                                        try:send_event(generation_stats=metrics)
+                                        except (BrokenPipeError,ConnectionResetError):
+                                            session.stop();raise InterruptedError('Gallery stopped.')
+                                    for choice in (chunk.get('choices') or [])[:1]:
+                                        delta=choice.get('delta') or {}
+                                        if delta.get('tool_calls'):raise RuntimeError('Unexpected tool call from gallery worker.')
+                                        parts.append(delta.get('content') or '')
+                                        finish_reason=choice.get('finish_reason') or finish_reason
+                            if not done or finish_reason!='stop':raise RuntimeError('Visual analysis did not finish; try a smaller batch or larger context.')
+                            return ''.join(parts).strip()
+                        try:
+                            send_event(shell_event={'type':'start','idx':idx,'kind':'view_all_images','command':path,'cwd':''})
+                            if not vision:raise ValueError('The current chat model does not support vision.')
+                            context=stats.context_limit or current_config['context']
+                            goal=chat_history.user_text(chat,seq)
+                            result=gallery.inspect(session,args,goal,counter,context,infer_gallery,notify_gallery,min(1536,max(128,context//6)))
+                            state=result['status']
+                            result['gallery']={'seq':seq,'idx':idx,'directory':path}
+                            result['lookup']='Use read_gallery_results with this seq and idx to resolve any image numbers to exact absolute paths; query in pages of up to 10.'
+                            if state=='complete' and not result['total']:
+                                notify_gallery(notes=result['observations'])
+                        except (InterruptedError,BrokenPipeError,ConnectionResetError):
+                            state='stopped';session.stop();raise InterruptedError('Gallery stopped.')
+                        except Exception as e:
+                            result={'status':'error','error':str(e),'note':'Gallery inspection stopped before completion. Use the displayed counts; do not claim all images were analyzed.'}
+                            notify_gallery(notes=str(e))
+                        finally:
+                            chat_history.finish_gallery(chat,seq,idx,state)
+                        send_event(shell_event={'type':'end','idx':idx,'status':state,'exit_code':None})
+                        group.append({'role':'tool','tool_call_id':id,'content':json.dumps(result,ensure_ascii=True)})
+                        continue
                     if fn['name']=='view_image':
                         viewed+=1
                         idx+=1
@@ -749,9 +847,13 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_response(200);self.send_header('Content-Type','image/png');self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
                 if path.path=='/api/chats/viewed-image':
                     # Only recorded successful views, never an arbitrary client-supplied path.
-                    reference=chat_history.viewed_image_reference(q['chat'][0],int(q['seq'][0]),int(q['idx'][0]))
+                    chat,seq,idx=q['chat'][0],int(q['seq'][0]),int(q['idx'][0])
+                    position=q.get('position',[None])[0]
+                    reference=(chat_history.gallery_image_reference(chat,seq,idx,int(position)) if position is not None
+                               else chat_history.viewed_image_reference(chat,seq,idx))
                     if not reference:return self.json_response(404,{'error':'Image reference not found'})
-                    result=shell_tool.view_image(shell_tool.Session(),{'path':reference[0]},expected_digest=reference[1])
+                    with preview_slots:
+                        result=shell_tool.view_image(shell_tool.Session(),{'path':reference[0]},expected_digest=reference[1],max_side=256 if q.get('thumb')==['1'] else 1024)
                     if not isinstance(result,list):return self.json_response(404,{'error':'Original image unavailable or changed'})
                     import base64
                     raw=base64.b64decode(result[1]['image_url']['url'].split(',',1)[1],validate=True)
@@ -794,7 +896,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if loading:
                     return self.json_response(503, {'status':'loading'})
                 if sleeping:
-                    return self.json_response(200, {'status':'sleeping','configured':bool(config['model'])})
+                    missing=settings.missing_paths(config)
+                    return self.json_response(200, {'status':'sleeping','configured':bool(config['model']) and not missing,'missing_model_files':missing})
             try:
                 with urllib.request.urlopen(f'http://127.0.0.1:{engine.PORT}/health',timeout=2) as r:
                     self.send_response(r.status)

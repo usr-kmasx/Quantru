@@ -489,6 +489,7 @@ let busy = false;
 let ready = false;
 let modelSleeping = false;
 let modelUnconfigured = false;
+let modelFilesMissing = false;
 let serverInUse = false;
 function bubble(role, value) {
   const node = document.createElement('div');
@@ -498,24 +499,56 @@ function bubble(role, value) {
   scheduleFollow();
   return node;
 }
+// Local voice status owns the notice while recording or transcribing.
+let healthTimer=null, healthInFlight=false, healthRevision=0, healthRefreshPending=false;
+function renderIdleStatus(){
+  if(busy)return; // The active generation owns its own status.
+  status.textContent=document.body.classList.contains('voice-active')||healthRefreshPending?''
+    :remotePending?'Generation in progress…'
+    :serverInUse?'Quantru is busy…'
+    :modelUnconfigured?(modelFilesMissing?'Model files unavailable. Update their paths in llama.cpp settings.':'Choose a chat model in llama.cpp settings.')
+    :ready?'':'Loading model…';
+}
+function refreshHealthAfterVoice(){
+  healthRevision++;
+  healthRefreshPending=true;
+  clearTimeout(healthTimer);
+  renderIdleStatus();
+  if(!healthInFlight)health();
+}
 async function health() {
+  if(healthInFlight)return;
+  healthInFlight=true;
+  const revision=healthRevision;
+  let nextReady=false,nextSleeping=false,nextUnconfigured=false,nextMissing=false,nextInUse=false;
   try {
     const response = await fetch('/api/health', {cache:'no-store'});
     const healthData=await response.json().catch(()=>({}));
-    modelUnconfigured = response.ok && healthData.configured === false;
-    ready = response.ok && !modelUnconfigured;
-    modelSleeping = ready && healthData.status === 'sleeping';
-    serverInUse=healthData.status==='busy';
+    nextUnconfigured = response.ok && healthData.configured === false;
+    nextMissing = Array.isArray(healthData.missing_model_files)&&healthData.missing_model_files.length>0;
+    nextReady = response.ok && !nextUnconfigured;
+    nextSleeping = nextReady && healthData.status === 'sleeping';
+    nextInUse=healthData.status==='busy';
     // Compatibility with an older server during a running image request.
-    if(!ready&&!healthData.status&&!mobileClient){
+    if(!nextReady&&!healthData.status&&!mobileClient){
       const imageState=await fetch('/api/image/settings',{cache:'no-store'}).then(r=>r.json()).catch(()=>({}));
-      serverInUse=imageState.loading===true;
+      nextInUse=imageState.loading===true;
     }
-  } catch (_) { ready = false; modelSleeping = false; modelUnconfigured=false; serverInUse=false; }
-  if (!busy) status.textContent = remotePending ? 'Generating on another device…' : serverInUse ? 'Please wait, another device is using Quantru…' : modelUnconfigured ? 'Choose a chat model in llama.cpp settings.' : ready ? '' : 'Loading model…';
-  update();
-  if(ready)refreshReasoning();
-  setTimeout(health, 1500);
+  } catch (_) { nextReady=false;nextSleeping=false;nextUnconfigured=false;nextMissing=false;nextInUse=false; }
+  finally {
+    healthInFlight=false;
+    if(revision!==healthRevision){
+      // Discard a response started before local voice processing ended.
+      healthTimer=setTimeout(health,0);
+    }else{
+      ready=nextReady;modelSleeping=nextSleeping;modelUnconfigured=nextUnconfigured;
+      modelFilesMissing=nextMissing;serverInUse=nextInUse;healthRefreshPending=false;
+      healthTimer=setTimeout(health,1500);
+      renderIdleStatus();
+      update();
+      if(ready)refreshReasoning();
+    }
+  }
 }
 form.addEventListener('submit', async e => {
   e.preventDefault();
@@ -617,7 +650,7 @@ async function generate(turn, addUser) {
         if(chunk.shell_event){
           const event=chunk.shell_event;
           if(event.type==='writing')status.textContent='Writing command…';
-          else if(event.type==='start')status.textContent=event.kind==='view_image'?'Viewing image…':'Running terminal command…';
+          else if(event.type==='start')status.textContent=event.kind==='view_image'?'Viewing image…':event.kind==='view_all_images'?'Viewing images…':event.kind==='gallery_results'?'Reading gallery results…':'Running terminal command…';
           else if(event.type==='end')status.textContent='';
         }
         if(chunk.image_status)status.textContent=chunk.image_status;

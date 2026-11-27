@@ -211,13 +211,91 @@ function appendViewedImage(reply,record,before,seq){
   }};
   block.finish(record.status||'running');return block;
 }
+function appendViewedGallery(reply,record,before,seq){
+  const box=document.createElement('section');box.className='shell-run viewed-gallery-run';
+  const header=document.createElement('div');header.className='shell-run-header';
+  const title=document.createElement('span');title.textContent='View all images';
+  const state=document.createElement('span');state.className='shell-run-status';header.append(title,state);
+  const path=document.createElement('div');path.className='shell-run-cwd';path.textContent=record.command||'';
+  const progress=document.createElement('progress');progress.className='gallery-progress';progress.setAttribute('aria-label','Image inspection progress');
+  const groups=document.createElement('div');groups.className='viewed-gallery-groups';
+  const details=document.createElement('details');details.className='gallery-notes';
+  const summary=document.createElement('summary');summary.textContent='Visual observations';
+  const output=document.createElement('div');output.className='shell-run-output';output.textContent=record.output||'';output.hidden=!output.textContent;
+  details.append(summary,output);details.hidden=!output.textContent;
+  box.append(header,path,progress,groups,details);reply.insertBefore(box,before);
+  const seen=new Map(),folders=new Map();let total=null,viewed=0,failed=0;
+  const root=(record.command||'').replace(/\/+$/,'');
+  function folderGrid(item){
+    const dir=item.path.slice(0,item.path.lastIndexOf('/'));
+    const relative=dir===root?'.':dir.startsWith(root+'/')?dir.slice(root.length+1):dir;
+    let group=folders.get(dir);
+    if(!group){
+      const box=document.createElement('details');box.className='gallery-folder';box.open=true;
+      const title=document.createElement('summary');title.className='gallery-folder-title';title.textContent=relative;title.title=dir;
+      const grid=document.createElement('div');grid.className='viewed-gallery';
+      box.append(title,grid);
+      group={box,grid,title,first:item.position};folders.set(dir,group);
+      const next=Array.from(groups.children).find(el=>Number(el.dataset.position)>item.position);
+      box.dataset.position=String(item.position);groups.insertBefore(box,next||null);
+    }else if(item.position<group.first){
+      group.first=item.position;group.box.dataset.position=String(item.position);
+      const next=Array.from(groups.children).find(el=>el!==group.box&&Number(el.dataset.position)>item.position);
+      groups.insertBefore(group.box,next||null);
+    }
+    return group.grid;
+  }
+  function add(item){
+    if(seen.has(item.position))return;
+    const grid=folderGrid(item);
+    const tile=document.createElement('figure');tile.className='gallery-tile';tile.dataset.position=String(item.position);
+    const name=item.path.split('/').at(-1)||item.path;
+    const label=document.createElement('figcaption');label.textContent=name;label.title=item.path;
+    if(item.status==='viewed'){
+      viewed++;
+      const img=document.createElement('img');img.alt=name;img.loading='lazy';img.decoding='async';
+      img.tabIndex=0;img.setAttribute('role','button');
+      const url='/api/chats/viewed-image?chat='+encodeURIComponent(chatId)+'&seq='+seq+'&idx='+record.idx+'&position='+item.position;
+      const unavailable=document.createElement('div');unavailable.className='gallery-placeholder';unavailable.textContent='Original unavailable or changed';unavailable.hidden=true;
+      img.onerror=()=>{img.hidden=true;unavailable.hidden=false;};
+      img.onclick=()=>showSavedImage(url,name);
+      img.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();img.click();}};
+      img.src=url+'&thumb=1';tile.append(img,unavailable);
+    }else{
+      failed++;
+      const error=document.createElement('div');error.className='gallery-placeholder';error.textContent=item.error||'Not analyzed';tile.append(error);
+    }
+    tile.append(label);
+    const next=grid.lastElementChild&&Number(grid.lastElementChild.dataset.position)>item.position?Array.from(grid.children).find(el=>Number(el.dataset.position)>item.position):null;
+    grid.insertBefore(tile,next||null);seen.set(item.position,tile);
+  }
+  const block={box,output,running:true,
+    updateRecord(r){
+      if(Number.isInteger(r.gallery_total))total=r.gallery_total;
+      const items=r.gallery_items||[];
+      if(items.length!==seen.size)for(const item of items)add(item);
+      if(total!==null){progress.max=Math.max(1,total);progress.value=seen.size;}
+      details.hidden=!r.output;
+    },
+    appendOutput(text){output.textContent+=text;output.hidden=!output.textContent;details.hidden=!output.textContent;},
+    finish(status){
+      block.running=status==='running';box.dataset.status=status;
+      const counts=total===null?'':viewed+' / '+total+' viewed'+(failed?' · '+failed+' failed':'');
+      const prefix=status==='running'?(total===null?'Scanning…':'Viewing…'):status==='complete'?'Complete':status==='partial'?'Partial':status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':'Failed';
+      state.textContent=counts?prefix+' · '+counts:prefix;
+      progress.hidden=status!=='running'||total===0;
+    }
+  };
+  block.updateRecord(record);block.finish(record.status||'running');return block;
+}
 function appendShellRun(reply,record,before=null,seq=null){
   if(record.kind==='view_image')return appendViewedImage(reply,record,before,seq);
+  if(record.kind==='view_all_images')return appendViewedGallery(reply,record,before,seq);
   const box=document.createElement('section');box.className='shell-run';
   const header=document.createElement('div');header.className='shell-run-header';
-  const title=document.createElement('span');title.textContent='Terminal';
+  const title=document.createElement('span');title.textContent=record.kind==='gallery_results'?'Read gallery results':'Terminal';
   const state=document.createElement('span');state.className='shell-run-status';
-  const copy=document.createElement('button');copy.type='button';copy.textContent='Copy';copy.title='Copy terminal command';
+  const copy=document.createElement('button');copy.type='button';copy.textContent='Copy';copy.title=record.kind==='gallery_results'?'Copy lookup arguments':'Copy terminal command';
   copy.onclick=()=>copyToClipboard(command.textContent).catch(()=>{});
   header.append(title,state,copy);
   const cwd=document.createElement('div');cwd.className='shell-run-cwd';cwd.textContent=record.cwd||'';cwd.hidden=!record.cwd;
@@ -231,7 +309,7 @@ function appendShellRun(reply,record,before=null,seq=null){
     block.running=status==='running'||status==='writing';
     copy.disabled=status==='writing';
     box.dataset.status=status;
-    state.textContent=status==='writing'?'Writing command…':status==='running'?'Running…':status==='complete'?'Exit '+(code??0):status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':code==null?'Failed':'Exit '+code;
+    state.textContent=status==='writing'?'Writing command…':status==='running'?'Running…':status==='complete'?(record.kind==='gallery_results'?'Complete':'Exit '+(code??0)):status==='stopped'?'Stopped':status==='interrupted'?'Interrupted':code==null?'Failed':'Exit '+code;
   }};
   block.finish(record.status||'running',record.exit_code);
   return block;
@@ -310,6 +388,7 @@ function renderResponseTimeline(turn,record,pending=false){
         if(text.startsWith(block.output.textContent))block.appendOutput(text.slice(block.output.textContent.length));
         else{block.output.textContent=text;block.output.hidden=!text;}
       }
+      block.updateRecord?.(r);
       block.finish(status,r.exit_code);
     }else if(item.kind==='generated_image'){
       obtain(id,item.kind,()=>({box:appendGeneratedImage(reply,chatId,turn.seq,anchor)}));
@@ -346,7 +425,7 @@ function applyResponseChunk(record,chunk){
       record.shell_runs.push({...e,status:'running',output:'',exit_code:null});
     }else{
       const r=record.shell_runs.find(r=>r.idx===e.idx);
-      if(r){if(e.type==='output')r.output+=e.text||'';else if(e.type==='end'){r.status=e.status;r.exit_code=e.exit_code;}}
+      if(r){if(e.type==='gallery_total'){r.gallery_total=e.total;r.gallery_items=[];}else if(e.type==='gallery_items'){(r.gallery_items??=[]).push(...e.items);}else if(e.type==='output')r.output+=e.text||'';else if(e.type==='end'){r.status=e.status;r.exit_code=e.exit_code;}}
     }
   }
   if(Array.isArray(chunk.timeline))record.timeline=chunk.timeline;
@@ -530,7 +609,7 @@ async function syncTick(){
     const pending=Boolean(state.pending||state.live);
     const changed=remotePending!==pending;
     remotePending=pending;
-    if(changed)update();
+    if(changed){renderIdleStatus();update();}
     if(state.list_revision!==listRevision&&!chatList.querySelector('.chat-rename,.chat-menu')){
       const top=chatList.scrollTop;
       if(await refreshChats()){listRevision=state.list_revision;chatList.scrollTop=top;}
