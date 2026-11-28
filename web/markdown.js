@@ -149,6 +149,7 @@
       pending.delete(node);
       if(!node.isConnected)return;
       const source=job.source,afterRender=job.afterRender;
+      const scrollAnchor=typeof captureChatAnchor==='function'&&!followLatest&&!historyBusy&&node.closest('.messages')&&node.getBoundingClientRect().top<chatViewportTop()+1?captureChatAnchor():null;
       node.classList.add('markdown');
       const next=document.createElement("div");
       next.innerHTML=DOMPurify.sanitize(md.render(source),{ADD_TAGS:['eq','eqn','eqno'],ADD_ATTR:['target','rel','aria-hidden'],FORBID_TAGS:['img','iframe','object','embed','form'],FORBID_ATTR:['src','srcset']});
@@ -180,6 +181,7 @@
         if (state.follow) pre.scrollTop = pre.scrollHeight;
         else if (previous) pre.scrollTop = previous.top;
       }
+      if(scrollAnchor)restoreChatAnchor(scrollAnchor);
       if (afterRender) afterRender();
     };
     if(final) draw();

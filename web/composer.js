@@ -142,18 +142,80 @@ async function refreshReasoning(){
     updateReasoning();
   }catch(_){}
 }
+// Only the phone/tablet browser uses a bounded conversation viewport.
+const mobileChatLayout=mobileClient&&(navigator.maxTouchPoints>0||window.matchMedia('(any-pointer: coarse)').matches);
+document.documentElement.classList.toggle('mobile-chat-layout',mobileChatLayout);
+let composerMeasureKey=null,chatViewportHeight=0,chatViewportTopOffset=0,viewportFrame=0;
+function syncComposerViewport(visual=window.visualViewport){
+  if(!mobileChatLayout){resizeComposer();return;}
+  // Keep the app inside the visual viewport, without adding document
+  // padding or scrolling the document to compensate for the keyboard.
+  // Ignore pinch zoom: the browser owns the zoomed viewport.
+  if(visual&&Math.abs(visual.scale-1)>=.01)return;
+  const height=Math.max(1,Math.round(visual?.height||window.innerHeight));
+  const top=Math.max(0,Math.round(visual?.offsetTop||0));
+  const resized=height!==chatViewportHeight;
+  const root=document.documentElement;
+  if(resized){
+    chatViewportHeight=height;
+    root.style.setProperty('--chat-viewport-height',height+'px');
+  }
+  if(top!==chatViewportTopOffset){
+    chatViewportTopOffset=top;
+    root.style.setProperty('--chat-viewport-top',top+'px');
+  }
+  resizeComposer();
+  if(resized&&followLatest)scheduleFollow();
+}
+function scheduleComposerViewport(){
+  if(viewportFrame)return;
+  viewportFrame=requestAnimationFrame(()=>{
+    viewportFrame=0;syncComposerViewport();
+  });
+}
+function resizeComposer(){
+  const width=form.getBoundingClientRect().width;
+  if(!width)return;
+  const expanded=form.classList.contains('expanded');
+  const visual=window.visualViewport;
+  const viewport=mobileChatLayout?chatViewportHeight||Math.max(1,Math.floor(window.innerHeight)):Math.max(1,Math.floor(visual&&Math.abs(visual.scale-1)<.01?Math.min(window.innerHeight,visual.height):window.innerHeight));
+  const limit=mobileChatLayout?Math.max(36,Math.floor(Math.min(expanded?viewport*.65:Math.min(240,viewport*.55),viewport-132))):expanded?Math.max(36,Math.floor(viewport*.65)):240;
+  const key=JSON.stringify([input.value,width,expanded,expanded?viewport:0,limit,reasoningControl.hidden,imageChip.hidden,shellChip.hidden]);
+  if(key===composerMeasureKey)return;
+  // Measure the compact and multiline layouts independently of the focused
+  // textarea. Status polling must never temporarily shrink the real editor.
+  const mirror=form.cloneNode(true);
+  mirror.classList.remove('multiline','expanded');
+  mirror.classList.add('composer-measure');
+  mirror.inert=true;mirror.setAttribute('aria-hidden','true');
+  mirror.style.width=width+'px';
+  mirror.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
+  mirror.querySelectorAll('input[type=file],.reasoning-menu').forEach(node=>node.remove());
+  const field=mirror.querySelector('textarea');
+  field.value=input.value;field.tabIndex=-1;
+  Object.assign(field.style,{height:'0px',minHeight:'0px',maxHeight:'none'});
+  document.body.append(mirror);
+  let multi,height;
+  try{
+    const style=getComputedStyle(field);
+    const lineHeight=parseFloat(style.lineHeight)||24;
+    const padding=(parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0);
+    multi=expanded||field.scrollHeight>lineHeight+padding+2;
+    mirror.classList.toggle('multiline',multi);
+    height=Math.min(Math.max(multi?36:24,field.scrollHeight),limit);
+  }finally{mirror.remove();}
+  composerMeasureKey=key;
+  if(expanded){
+    const cap=viewport+'px';
+    if(form.style.getPropertyValue('--composer-viewport')!==cap)form.style.setProperty('--composer-viewport',cap);
+  }else if(form.style.getPropertyValue('--composer-viewport'))form.style.removeProperty('--composer-viewport');
+  form.classList.toggle('multiline',multi);
+  if(input.style.height!==height+'px'){
+    input.style.height=height+'px';
+    if(mobileChatLayout&&followLatest)scheduleFollow();
+  }
+}
 function update() {
-  const expanded = form.classList.contains('expanded');
-  // Measure in the compact layout, never in the multiline layout whose
-  // minimum height would otherwise keep the composer permanently expanded.
-  input.style.height = 'auto';
-  if (!expanded) form.classList.remove('multiline');
-  const style = getComputedStyle(input);
-  const lineHeight = parseFloat(style.lineHeight) || 24;
-  const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
-  const multi = expanded || input.scrollHeight > lineHeight + padding + 2;
-  form.classList.toggle('multiline', multi);
-  input.style.height = Math.min(input.scrollHeight, expanded ? window.innerHeight * .65 : 240) + 'px';
   const stopping = busy && activeRequest?.signal.aborted;
   const mode = busy ? 'stop' : 'send';
   if (send.dataset.mode !== mode) {
@@ -168,6 +230,7 @@ function update() {
   updateImageHint();
   updateShellHint();
   updateReasoning();
+  resizeComposer();
 }
 const imageHint=document.createElement('button');
 imageHint.type='button';imageHint.className='image-tool-hint';imageHint.hidden=true;
@@ -272,10 +335,14 @@ files.addEventListener('change', () => {
   renderAttachments();
   update();
 });
-form.querySelector('.expand').addEventListener('click', () => {
+const expandEditor=form.querySelector('.expand');
+expandEditor.addEventListener('pointerdown',e=>{
+  if(document.activeElement===input)e.preventDefault();
+});
+expandEditor.addEventListener('click', () => {
   form.classList.toggle('expanded');
   update();
-  input.focus();
+  input.focus({preventScroll:true});
 });
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -284,43 +351,123 @@ input.addEventListener('keydown', e => {
   }
 });
 const messages = document.querySelector('.messages');
-const chatScroll = document.scrollingElement;
+const chatScroll=mobileChatLayout?messages:document.scrollingElement;
+const chatScrollEvents=mobileChatLayout?messages:window;
+function chatViewportTop(){
+  return mobileChatLayout?messages.getBoundingClientRect().top:(window.visualViewport?.offsetTop||0);
+}
 let followLatest = true;
-let followFrame = 0;
-function nearBottom() {
-  return chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop <= 32;
+let followFrame=0,lastChatTop=chatScroll.scrollTop;
+let manualScrollUntil=0,manualScrollDirection=0,manualChatScroll=false;
+function nearBottom(){
+  return chatScroll.scrollHeight-chatScroll.clientHeight-chatScroll.scrollTop<=32;
 }
-function scheduleFollow() {
-  if (!followLatest || followFrame) return;
-  followFrame = requestAnimationFrame(() => {
-    followFrame = 0;
-    if (followLatest) chatScroll.scrollTop = chatScroll.scrollHeight;
-  });
-}
-let lastChatTop=chatScroll.scrollTop;
 function cancelFollow(){
-  cancelAnimationFrame(followFrame);
+  if(followFrame)cancelAnimationFrame(followFrame);
   followFrame=0;
 }
-window.addEventListener('scroll', () => {
-  const top=chatScroll.scrollTop;
-  if(nearBottom())followLatest=true;
-  else if(top<lastChatTop-1)followLatest=false;
-  lastChatTop=top;
-  if(!followLatest)cancelFollow();
-}, {passive:true});
-messages.addEventListener('pointerdown', () => {
-  followLatest=false;
-  cancelFollow();
-}, {passive:true});
-messages.addEventListener('wheel', e => {
-  const inner = e.target.closest('.thinking-text, .code-block pre');
-  if (inner && inner.scrollHeight > inner.clientHeight) return;
-  if (e.deltaY < 0 && chatScroll.scrollHeight > chatScroll.clientHeight) {
-    followLatest = false;
-    cancelFollow();
+function pauseFollow(){
+  followLatest=false;cancelFollow();
+}
+function setChatTop(top){
+  const target=Math.max(0,Math.min(top,chatScroll.scrollHeight-chatScroll.clientHeight));
+  if(Math.abs(chatScroll.scrollTop-target)<.5)return;
+  manualScrollUntil=0;
+  chatScroll.scrollTop=target;
+  lastChatTop=chatScroll.scrollTop;
+}
+function scheduleFollow(){
+  if(!followLatest||followFrame)return;
+  followFrame=requestAnimationFrame(()=>{
+    followFrame=0;
+    if(followLatest)setChatTop(chatScroll.scrollHeight);
+  });
+}
+function noteManualScroll(direction){
+  manualScrollDirection=direction;
+  manualScrollUntil=performance.now()+1000;
+  if(direction<0)pauseFollow();
+  else if(direction>0&&nearBottom())followLatest=true;
+}
+function innerScrollTarget(target){
+  return target instanceof Element&&!!target.closest('textarea,input,select,dialog,.quantru-panel,.composer-dock,.thinking-text,.code-block pre,.shell-run-output,.katex-display,.markdown eqn,.markdown table');
+}
+chatScrollEvents.addEventListener('scroll',()=>{
+  const top=chatScroll.scrollTop,delta=top-lastChatTop;
+  manualChatScroll=performance.now()<=manualScrollUntil&&Math.abs(delta)>.5;
+  if(manualChatScroll){
+    if(delta<0&&manualScrollDirection<=0)pauseFollow();
+    else if(delta>0&&manualScrollDirection>=0&&nearBottom())followLatest=true;
   }
-}, {passive:true});
+  lastChatTop=top;
+},{passive:true});
+messages.addEventListener('pointerdown',e=>{
+  if(!innerScrollTarget(e.target))pauseFollow();
+},{passive:true});
+window.addEventListener('wheel',e=>{
+  if(e.ctrlKey||e.defaultPrevented||innerScrollTarget(e.target)||(mobileChatLayout&&!messages.contains(e.target))||Math.abs(e.deltaY)<=Math.abs(e.deltaX))return;
+  if(e.deltaY)noteManualScroll(Math.sign(e.deltaY));
+},{passive:true});
+let chatTouch=null;
+window.addEventListener('touchstart',e=>{
+  chatTouch=!innerScrollTarget(e.target)&&(!mobileChatLayout||messages.contains(e.target))&&e.touches.length===1?e.touches[0].clientY:null;
+},{passive:true});
+window.addEventListener('touchmove',e=>{
+  if(chatTouch===null||e.touches.length!==1){chatTouch=null;return;}
+  const y=e.touches[0].clientY,delta=chatTouch-y;
+  if(Math.abs(delta)>2){noteManualScroll(Math.sign(delta));chatTouch=y;}
+},{passive:true});
+for(const type of ['touchend','touchcancel'])window.addEventListener(type,()=>{chatTouch=null;},{passive:true});
+window.addEventListener('pointerdown',e=>{
+  if(e.pointerType==='mouse'&&(!mobileChatLayout||messages.contains(e.target))&&e.clientX>=(mobileChatLayout?messages.getBoundingClientRect().right:document.documentElement.clientWidth)-8&&!innerScrollTarget(e.target)){
+    pauseFollow();noteManualScroll(0);
+  }
+},{passive:true});
+window.addEventListener('pointermove',e=>{
+  if(e.pointerType==='mouse'&&e.buttons===1&&(!mobileChatLayout||messages.contains(e.target))&&e.clientX>=(mobileChatLayout?messages.getBoundingClientRect().right:document.documentElement.clientWidth)-8&&!innerScrollTarget(e.target))noteManualScroll(0);
+},{passive:true});
+window.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||innerScrollTarget(e.target)||e.target?.isContentEditable)return;
+  const up=['ArrowUp','PageUp','Home'].includes(e.key)||(e.key===' '&&e.shiftKey);
+  const down=['ArrowDown','PageDown','End'].includes(e.key)||(e.key===' '&&!e.shiftKey&&!(e.target instanceof Element&&e.target.closest('button,a,summary')));
+  if(!up&&!down)return;
+  noteManualScroll(up?-1:1);
+  if(mobileChatLayout){
+    e.preventDefault();
+    const amount=e.key==='Home'?-chatScroll.scrollHeight:e.key==='End'?chatScroll.scrollHeight:e.key.startsWith('Arrow')?48:Math.max(48,chatScroll.clientHeight*.9);
+    chatScroll.scrollTop+=e.key==='Home'||e.key==='End'?amount:(up?-amount:amount);
+  }
+});
+// Preserve the visible message (or its visible response block) across
+// synchronous DOM changes, rather than an obsolete scrollTop.
+function captureChatAnchor(){
+  const top=chatScroll.scrollTop,edge=chatViewportTop();
+  for(const turn of turns){
+    for(const part of ['userBubble','userActions','reply','replyActions']){
+      const node=turn[part];
+      if(!node?.isConnected)continue;
+      const rect=node.getBoundingClientRect();
+      if(rect.height<=0||rect.bottom<=edge)continue;
+      let child=node;
+      if(part==='reply'&&rect.top<edge){
+        for(const block of node.children){
+          const r=block.getBoundingClientRect();
+          if(r.height>0&&r.bottom>edge){child=block;break;}
+        }
+      }
+      return {top,seq:turn.seq,part,node,child,y:child.getBoundingClientRect().top-edge,parentY:rect.top-edge};
+    }
+  }
+  return {top};
+}
+function restoreChatAnchor(anchor){
+  if(!anchor)return;
+  const node=anchor.node?.isConnected?anchor.node:turns.find(t=>t.seq===anchor.seq)?.[anchor.part];
+  if(!node?.isConnected){setChatTop(anchor.top);return;}
+  const child=anchor.child?.isConnected&&node.contains(anchor.child)&&anchor.child.getBoundingClientRect().height>0?anchor.child:node;
+  const y=child===anchor.child?anchor.y:anchor.parentY;
+  setChatTop(chatScroll.scrollTop+child.getBoundingClientRect().top-chatViewportTop()-y);
+}
 
 const status = document.querySelector('.status');
 const turns = [];
@@ -677,7 +824,7 @@ async function generate(turn, addUser) {
       historyNote.textContent='Message was not saved. Conversation will synchronize.';
     }
     if(persisted)try{await saveFinish(turn,record.thinking,outcome,record.error);}catch(e){historyNote.textContent='Could not save response: '+e.message;}
-    const keepFollowing = followLatest && nearBottom();
+    const keepFollowing = followLatest;
     cancelFollow();
     status.textContent='';
     reply.classList.remove('streaming');
@@ -691,6 +838,26 @@ async function generate(turn, addUser) {
     if(keepFollowing)scheduleFollow();
   }
 }
+const composerSizeObserver=new ResizeObserver(resizeComposer);
+composerSizeObserver.observe(form);
+composerSizeObserver.observe(form.querySelector('.actions'));
+if(mobileChatLayout){
+  let previousPaneHeight=messages.clientHeight;
+  new ResizeObserver(()=>{
+    const height=messages.clientHeight;
+    if(height!==previousPaneHeight){
+      previousPaneHeight=height;
+      if(followLatest)scheduleFollow();
+    }
+  }).observe(messages);
+}
+window.addEventListener('resize',scheduleComposerViewport,{passive:true});
+window.visualViewport?.addEventListener('resize',scheduleComposerViewport,{passive:true});
+if(mobileChatLayout)window.visualViewport?.addEventListener('scroll',scheduleComposerViewport,{passive:true});
+input.addEventListener('focus',scheduleComposerViewport);
+input.addEventListener('blur',scheduleComposerViewport);
+document.fonts?.ready.then(()=>{composerMeasureKey=null;resizeComposer();});
+syncComposerViewport();
 health();
 update();
 initHistory();

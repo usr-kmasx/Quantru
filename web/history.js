@@ -343,6 +343,7 @@ function initResponseTimeline(turn){
   turn.responseBlocks=new Map();
 }
 function renderResponseTimeline(turn,record,pending=false){
+  const scrollAnchor=!followLatest&&!historyBusy&&turn.reply?.isConnected?captureChatAnchor():null;
   if(!turn.responseAnchor)initResponseTimeline(turn);
   const reply=turn.reply,anchor=turn.responseAnchor,blocks=turn.responseBlocks;
   const steps=[...(Array.isArray(record.timeline)?record.timeline:legacyTimeline(record))];
@@ -404,6 +405,7 @@ function renderResponseTimeline(turn,record,pending=false){
   for(let i=ordered.length-1;i>=0;i--){
     const box=ordered[i];if(box.nextSibling!==before)reply.insertBefore(box,before);before=box;
   }
+  if(scrollAnchor)restoreChatAnchor(scrollAnchor);
   scheduleFollow();
 }
 // Client state follows server-authored timeline metadata. Text and tool payloads
@@ -464,8 +466,8 @@ function restoreTurn(record){
   return turn;
 }
 function olderControl(){
-  olderButton.remove();
-  if(olderAvailable)messages.prepend(olderButton);
+  if(olderAvailable){if(messages.firstChild!==olderButton)messages.prepend(olderButton);}
+  else olderButton.remove();
 }
 async function openChat(id,initial=false){
   if(!initial&&!canSwitch())return;
@@ -490,14 +492,19 @@ async function openChat(id,initial=false){
 }
 async function loadOlder(){
   if(!olderAvailable||!turns.length||busy||historyBusy)return;
-  historyBusy=true;historyControls();followLatest=false;cancelFollow();
-  const oldTop=chatScroll.scrollTop, first=turns[0].userBubble, oldPosition=first.getBoundingClientRect().top;
+  historyBusy=true;historyControls();pauseFollow();
+  const id=chatId,before=turns[0].seq;
   try{
-    const data=await archiveRequest('/page?chat='+encodeURIComponent(chatId)+'&before='+turns[0].seq);
+    const data=await archiveRequest('/page?chat='+encodeURIComponent(id)+'&before='+before);
+    if(id!==chatId||turns[0]?.seq!==before)return;
+    // Capture after the request: the reader may have moved while it was pending.
+    const following=followLatest,anchor=captureChatAnchor(),first=turns[0].userBubble;
+    pauseFollow();
     const restored=data.turns.map(restoreTurn);
     for(const t of restored)for(const node of [t.userBubble,t.userActions,t.reply,t.replyActions])messages.insertBefore(node,first);
     turns.unshift(...restored);olderAvailable=data.more;olderControl();
-    chatScroll.scrollTop=oldTop+first.getBoundingClientRect().top-oldPosition;followLatest=false;
+    followLatest=following;
+    if(following)scheduleFollow();else restoreChatAnchor(anchor);
   }catch(e){historyNote.textContent=e.message;}
   finally{historyBusy=false;historyControls();update();}
 }
@@ -513,7 +520,7 @@ newChatButton.onclick=()=>{
 };
 moreChats.onclick=()=>refreshChats(true);
 async function initHistory(){
-  window.addEventListener('scroll',()=>{if(chatScroll.scrollTop<80&&olderAvailable&&!historyBusy&&!busy)loadOlder();},{passive:true});
+  chatScrollEvents.addEventListener('scroll',()=>{if(manualChatScroll&&manualScrollDirection<=0&&chatScroll.scrollTop<80&&olderAvailable&&!historyBusy&&!busy)loadOlder();},{passive:true});
   while(!(await refreshChats())) await new Promise(resolve=>setTimeout(resolve,1500));
   let id=null;try{id=localStorage.getItem('quantru.activeChat');}catch(_){}
   if(id)await openChat(id,true);
@@ -557,11 +564,8 @@ async function syncPage(id){
     records=page.turns.concat(records);more=page.more;
   }
   if(id!==chatId||busy||editing)return false;
-  const following=followLatest&&nearBottom();
-  const oldTop=chatScroll.scrollTop;
-  const anchor=turns.find(t=>t.userBubble.getBoundingClientRect().bottom>0);
-  const anchorTop=anchor?.userBubble.getBoundingClientRect().top;
-  cancelFollow();followLatest=false;
+  const following=followLatest,anchor=captureChatAnchor();
+  pauseFollow();
   const old=new Map(turns.map(t=>[t.seq,t]));
   const next=[];
   for(const record of records){
@@ -574,15 +578,18 @@ async function syncPage(id){
     old.delete(record.seq);next.push(turn);
   }
   for(const t of old.values())for(const n of [t.userBubble,t.userActions,t.reply,t.replyActions])n?.remove();
-  for(const t of next)for(const n of [t.userBubble,t.userActions,t.reply,t.replyActions])messages.append(n);
+  // Move only nodes that actually need to change order. Re-appending every
+  // existing message can disturb the viewport, selection and focused elements.
+  let cursor=messages.firstChild===olderButton?olderButton.nextSibling:messages.firstChild;
+  for(const t of next)for(const n of [t.userBubble,t.userActions,t.reply,t.replyActions]){
+    if(n===cursor)cursor=cursor.nextSibling;
+    else messages.insertBefore(n,cursor);
+  }
   turns.splice(0,turns.length,...next);
   nextSeq=(turns.at(-1)?.seq||0)+1;olderAvailable=more;olderControl();
   chatRevision=viewRevision=data.revision;liveVersion=null;
-  const sameAnchor=anchor&&turns.find(t=>t.seq===anchor.seq);
   followLatest=following;
-  if(following)scheduleFollow();
-  else if(sameAnchor)chatScroll.scrollTop=oldTop+sameAnchor.userBubble.getBoundingClientRect().top-anchorTop;
-  else chatScroll.scrollTop=oldTop;
+  if(following)scheduleFollow();else restoreChatAnchor(anchor);
   return true;
 }
 function showRemoteLive(live){
